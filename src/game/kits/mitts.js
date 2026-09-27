@@ -159,6 +159,7 @@ function burstFist(f, at, direct, normal) {
     G.projectiles.applyHit(o, e, lerp(w.splashMax, w.splashMin, clamp(d / w.splashRadius, 0, 1)), 'mitts');
   }
   G.specials?.areaHit?.(c, w.splashRadius, w.splashMin, f.team, o);
+  if (direct !== 'boss') G.boss?.splash(o, c, w.splashRadius, w.splashMax, w.splashMin, 'mitts');   // Boss Battle
   const col = o.color, show = o.isLocal || near(c, 26);
   if (show) {
     const n = normal || _v2.copy(f.dir).negate();
@@ -168,7 +169,7 @@ function burstFist(f, at, direct, normal) {
     else G.fx?.ring?.(c, n, col, { radius: w.splashRadius * 0.8, life: 0.22, snap: !!normal });
     G.audio?.play('mitts_pop', { pos: c, volume: direct ? 0.75 : 0.55, pitch: 0.95 + Math.random() * 0.12 });
   }
-  emit('weapon:impact', { pos: c.clone(), normal: (normal || UP).clone(), team: f.team, kind: 'shot', radius: w.splashRadius, victim: direct || undefined });
+  emit('weapon:impact', { pos: c.clone(), normal: (normal || UP).clone(), team: f.team, kind: 'shot', radius: w.splashRadius, victim: direct && direct !== 'boss' ? direct : undefined });
 }
 
 function updateFists(dt) {
@@ -193,6 +194,11 @@ function updateFists(dt) {
         burstFist(f, _v, e, null);
         dead = true; break;
       }
+    }
+    // Boss Battle: HULLBREAKER's hit spheres / its crablets
+    if (!dead && G.boss) {
+      const bh = G.boss.segHit(f.prev, f.pos, hr0);
+      if (bh) { const at = bh.point.clone(); G.boss.hit(f.owner, w.punchDamage, bh.target, 'mitts', at); burstFist(f, at, 'boss', null); dead = true; }
     }
     // enemy curtains / devices / special objects catch it (and it bursts there)
     if (!dead && G.subs && G.subs.blockShot(f.prev, f.pos, f.team, w.punchDamage)) { burstFist(f, f.pos, null, null); dead = true; }
@@ -391,6 +397,7 @@ function landSplash(a, at, n) {
     G.projectiles.applyHit(a, e, dmg, 'mitts');
   }
   G.specials?.areaHit?.(c, w.landRadius, w.landDamageMin, a.team, a);
+  G.boss?.splash(a, c, w.landRadius, w.landDamageMax, w.landDamageMin, 'mitts');   // Boss Battle
   if (a.isLocal || near(c, 40)) {
     G.fx?.explosion(c, col, 1.9);
     if (n.y > 0.7) G.fx?.superJumpLand?.(at, col);

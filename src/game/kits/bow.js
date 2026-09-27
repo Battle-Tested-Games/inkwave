@@ -142,6 +142,7 @@ function burst(p) {
     G.projectiles.applyHit(owner, e, dmg, W.id);
   }
   G.subs?.damageArea(c, p.br, p.be, p.team);
+  G.boss?.splash(owner, c, p.br, p.bd, p.be, W.id);   // Boss Battle
   const loud = owner.isLocal || near(c, 34);
   if (loud) {
     G.fx?.explosion(c, col, p.br * (p.tier === 2 ? 0.7 : 0.55));
@@ -191,6 +192,16 @@ function stepArrow(p, i, dt) {
         p.pos.copy(_v); p.prev.copy(_v); p.vel.set(p.dir.x * 1.5, -9, p.dir.z * 1.5); p.dist = Math.max(p.dist, p.range);
         return;
       }
+    }
+  }
+  // Boss Battle: HULLBREAKER's hit spheres / its crablets take the direct hit (a lodging arrow sticks there and bursts)
+  if (!p.noHit && G.boss) {
+    const bh = G.boss.segHit(p.prev, p.pos, ARROW_R);
+    if (bh) {
+      const at = bh.point.clone();
+      G.boss.hit(p.owner, p.dmg, bh.target, W.id, at);
+      if (p.lodge) lodge(p, at, _v.copy(p.dir).negate(), p.dir); else kill(i);
+      return;
     }
   }
   // enemy devices (curtains, sprinklers …) and special objects (bubbles) catch arrows; lodging ones stick in them

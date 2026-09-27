@@ -443,6 +443,7 @@ function burst(t, full) {
     G.projectiles.applyHit(t.owner, e, dmg, 'torpedo');
   }
   G.subs?.damageArea(c, s.radius, 60, t.team);   // enemy curtains / devices / bubbles; sets off enemy locked torpedoes
+  G.boss?.splash(t.owner, c, s.radius, s.damageMax, s.damageMin, 'torpedo');   // Boss Battle
   if (full) spawnDrops(t, c);
 }
 // shot down (or out of the world): gone without a blast

@@ -1936,12 +1936,19 @@ export class BotBrain {
         const wr = a.weaponRunner;
         if (w.kind === 'charger') { it.fire = !(wr.charging && wr.charge >= this.chargeRelease); if (wr.charging) move.multiplyScalar(0.3); }
         else if (w.kind === 'splatling') { it.fire = !wr.streaming && !(wr.charging && wr.charge >= this.chargeRelease * 0.9); if (wr.charging) move.multiplyScalar(0.45); }
+        else if (w.kind === 'spinner') { it.fire = wr.burstT <= 0 && !(wr.charging && wr.charge >= this.chargeRelease); if (wr.charging) move.multiplyScalar(0.6); }
+        // hold-to-charge kits: the bow draws to the release point; the Cutlass charges its heavy cut to full (its runner
+        // never sets .charging, only .charge) and lets go
+        else if (w.kind === 'bow') it.fire = !(wr.charging && wr.charge >= Math.max(0.5, this.chargeRelease));
+        else if (w.kind === 'blade') it.fire = !(wr.charge >= 0.98);
+        // Brolly: pump the trigger (holding it would unfold the canopy, then launch it)
+        else if (w.kind === 'brolly') { it.fire = !this._pump; this._pump = it.fire; }
         else if (w.kind === 'roller') it.fire = dist < 5.5 || (wr.rolling && dist < 8);
         else it.fire = true;
         this._firing = it.fire;
         this.mode = 'fight';   // (the aim spring's combat stiffness while shooting; reset each frame)
         if (this.bombCd <= 0 && !T.crab && a.ink > SUB.bomb.inkCost + 10 && dist > 5 && dist < 13 && Math.random() < 0.025) { it.sub = true; this.bombCd = 6 + Math.random() * 6; this._bombAim = true; }
-      } else if ((w.kind === 'charger' || w.kind === 'splatling') && a.weaponRunner.charging && T.los) it.fire = true;   // hold a charge through a blink
+      } else if ((w.kind === 'charger' || w.kind === 'splatling' || w.kind === 'spinner' || w.kind === 'bow') && a.weaponRunner.charging && T.los) it.fire = true;   // hold a charge through a blink
       // specials: slam from under its claws, the storm cloud onto it
       if (a.specialReady() && !th.level && !T.crab) {
         if (w.special === 'slam' && dist < 5.5) it.special = true;

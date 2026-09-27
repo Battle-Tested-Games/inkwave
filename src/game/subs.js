@@ -504,6 +504,7 @@ export class SubSystem {
       G.projectiles.applyHit(it.owner, e, lerp(dmgMin, dmgMax, k * k), it.kind);
     }
     this.damageArea(center, radius, 60, it.team);
+    G.boss?.splash(it.owner, center, radius, dmgMax, dmgMin, it.kind);   // Boss Battle
   }
   _pelletBlast(it, direct, at) {
     const s = it.sub, c = (at || it.pos).clone();
@@ -519,6 +520,7 @@ export class SubSystem {
       G.projectiles.applyHit(it.owner, e, s.splashDamage, 'burst');
     }
     this.damageArea(c, s.radius, 25, it.team);
+    G.boss?.splash(it.owner, c, s.radius, s.directDamage, s.splashDamage, 'burst');   // Boss Battle
   }
   _paint(it, c, r) {
     let area = G.paint.splat(c, r, it.team, { seed: Math.random() });

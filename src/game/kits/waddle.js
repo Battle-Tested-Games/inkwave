@@ -539,6 +539,7 @@ function blast(it) {
     G.projectiles.applyHit(a, e, lerp(s.damageMin, s.damageMax, k * k), 'waddle');
   }
   G.subs?.damageArea(c, s.radius, 60, team);
+  G.boss?.splash(a, c, s.radius, s.damageMax, s.damageMin, 'waddle');   // Boss Battle
   it.state = 'dead';
 }
 // popped by enemy fire / an enemy blast: harmless

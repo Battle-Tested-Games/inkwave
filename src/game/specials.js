@@ -63,6 +63,7 @@ function blast(owner, team, c, radius, dmgMax, dmgMin, weaponId, killRadius = 0)
     G.projectiles.applyHit(owner, e, lerp(dmgMax, dmgMin, k * k), weaponId);
   }
   G.subs?.damageArea(c, radius, 60, team);
+  G.boss?.splash(owner, c, radius, dmgMax, dmgMin, weaponId);   // Boss Battle
 }
 // continuous damage (tornado, sound beam): no per-frame hit events, only the splat
 function tickDamage(owner, e, dmg, weaponId) {

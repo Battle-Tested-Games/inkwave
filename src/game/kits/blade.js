@@ -21,6 +21,7 @@ import { WEAPON_ICONS } from '../../ui/ui-icons.js';
 import { buildBlade, animateBlade } from './blade-model.js';
 import { BladeFX, installBladeSounds, BLADE_ICON } from './blade-fx.js';
 
+const _bossTip = new THREE.Vector3();
 const DEG = Math.PI / 180;
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _n = new THREE.Vector3();
 const _m = new THREE.Matrix4(), _x = new THREE.Vector3(), _y = new THREE.Vector3(), _z = new THREE.Vector3();
@@ -227,6 +228,11 @@ function melee(a, w, S) {
     rumble(a, S.heavy ? 0.4 : 0.15, S.heavy ? 0.45 : 0.2, S.heavy ? 140 : 60);
     emit('blade:hit', { actor: a, victim: e, damage: dmg, heavy: S.heavy });
   }
+  // Boss Battle: the edge meets HULLBREAKER (or a crablet) along the swing's centre line — once per swing
+  if (G.boss && !S.hits.has(G.boss)) {
+    const bh = G.boss.segHit(_v3, _bossTip.set(_v3.x + fx * reach, _v3.y, _v3.z + fz * reach), 0.55);
+    if (bh) { S.hits.add(G.boss); G.boss.hit(a, dmg, bh.target, 'blade', bh.point.clone()); }
+  }
   // devices in reach (sprinklers, beacons, curtains) and bubbles: the blade cuts them too — once per swing
   if (!S.dev) {
     S.dev = true;
@@ -308,6 +314,11 @@ function updateWaves(dt) {
         _v.set(e.pos.x, y0 + Math.min(h * 0.6, 0.9), e.pos.z);
         G.fx?.burst(_v, _v2.copy(W.dir).negate(), W.col, { count: 12, speed: 4.5, size: 0.09 });
       }
+    }
+    // Boss Battle: the crescent cuts HULLBREAKER / a crablet once on its way through
+    if (G.boss && !W.hits.has(G.boss)) {
+      const bh = G.boss.segHit(W.prev, W.pos, w.waveWidth * 0.5);
+      if (bh) { W.hits.add(G.boss); G.boss.hit(W.owner, dmg, bh.target, 'blade', bh.point.clone()); }
     }
     // shields, curtains, devices and bubbles catch it; walls break it
     let stop = false;

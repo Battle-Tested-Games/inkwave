@@ -495,6 +495,7 @@ function blast(it) {
     G.projectiles.applyHit(a, e, lerp(s.damageMin, s.damageMax, k * k), 'shaker');
   }
   G.subs?.damageArea(c, s.radius, 40, team);
+  G.boss?.splash(a, c, s.radius, s.damageMax, s.damageMin, 'shaker');   // Boss Battle
   if (it.left > 0) {
     // the blast kicks it forward and up; the next one goes off `gap` later (usually just after it lands)
     it.vel.set(it.dir.x * s.hopSpeed, s.hopUp, it.dir.z * s.hopSpeed);

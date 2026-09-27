@@ -426,6 +426,19 @@ function tick(dt) {
     const e = PELLETS[i], p = e.p;
     if (p._bid !== e.id || !LIVE.has(p)) { PELLETS[i] = PELLETS[PELLETS.length - 1]; PELLETS.pop(); continue; }
     predict(p, dt, _v);
+    // Boss Battle: pellets into HULLBREAKER / a crablet add up per blast the same way (one hit; the core pass ends
+    // the pellet there)
+    if (G.boss) {
+      const bh = G.boss.segHit(p.pos, _v, p.size);
+      if (bh) {
+        const key = e.blast * 64 + 63;
+        let rec = PEND.get(key);
+        if (!rec) PEND.set(key, (rec = { owner: e.owner, boss: bh.target, point: bh.point.clone(), dmg: 0, n: 0, at: G.time + MERGE }));
+        rec.dmg += pelletDamage(p.start.distanceTo(bh.point)); rec.n++;
+        p._bid = -p._bid;
+        continue;
+      }
+    }
     for (const v of G.actors || []) {
       if (v.team === p.team || !v.alive) continue;
       const h = v.hitH || (v.form === 'squid' ? PLAYER.squidHeight : PLAYER.height), hr = v.hitR || PLAYER.radius;
@@ -443,7 +456,11 @@ function tick(dt) {
       }
     }
   }
-  for (const [key, rec] of PEND) if (G.time >= rec.at - 1e-6) { PEND.delete(key); PJ.applyHit(rec.owner, rec.victim, rec.dmg, 'brolly'); }
+  for (const [key, rec] of PEND) {
+    if (G.time < rec.at - 1e-6) continue;
+    PEND.delete(key);
+    if (rec.boss) G.boss?.hit(rec.owner, rec.dmg, rec.boss, 'brolly', rec.point); else PJ.applyHit(rec.owner, rec.victim, rec.dmg, 'brolly');
+  }
   snapShields();
   // 3) launched canopies hold enemy players back
   for (const c of LAUNCHED) blockActors(c);
