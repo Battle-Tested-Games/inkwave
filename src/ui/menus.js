@@ -6,7 +6,7 @@
 // nav('tab_prev'|'tab_next') for LB/RB tab switching, menus.timeScale (debug slow-motion for JS-driven motion).
 import {
   h, clamp, Spring, colorVars, toHex, splatSVG, fmtInt, fmtTime, pct, safeCall, restartAnim,
-  prefersReducedMotion, easeOutCubic, easeInOutCubic, esc,
+  prefersReducedMotion, easeOutCubic, easeInOutCubic, esc, blobPath,
 } from './ui-util.js';
 import {
   WEAPON_ICONS, SUB_ICONS, SQUID, GLYPHS, SPLAT_ICON, DEATH_ICON, keycap, mouseGlyph, padGlyph,
@@ -14,13 +14,13 @@ import {
 } from './ui-icons.js';
 import {
   GAME_TITLE, GAME_SUBTITLE, VERSION, WEAPONS, WEAPON_ORDER, SPECIALS, SUB, MAPS, DIFFICULTY, MATCH, QUALITY,
-  DEFAULT_SETTINGS, TEAM_PALETTES, COLORBLIND_PALETTE, PROGRESSION, BOT_NAMES, TEAM_NAMES,
+  DEFAULT_SETTINGS, TEAM_PALETTES, COLORBLIND_PALETTE, PROGRESSION, BOT_NAMES, TEAM_NAMES, ZONES,
 } from '../config.js';
 import * as LOOK from '../game/character-style.js';
 import { G } from '../core/ctx.js';
 import {
-  computeAwards, medalMarkup, awardBadge, awardIcon, rankEmblem, rankTier, RANK_TIERS, inkBurst, InkWipe, createPreview,
   sweepEdge, sweepClip, splatClip, splatCover, skinSwatch, irisSwatch, outfitIcon,
+  computeAwards, medalMarkup, awardBadge, awardIcon, rankEmblem, rankTier, RANK_TIERS, inkBurst, InkWipe, createPreview,
 } from './menu-art.js';
 
 const SCREENS = ['loading', 'title', 'main', 'loadout', 'setup', 'locker', 'settings', 'howto', 'credits', 'pause', 'results'];
@@ -28,8 +28,8 @@ const SCREENS = ['loading', 'title', 'main', 'loadout', 'setup', 'locker', 'sett
 const WIPES = new Set(['loading>title', 'title>main', 'results>main', 'pause>main', 'results>null', 'pause>title']);
 // Pushes/pops between these get the light ink swipe (decorative — the swap itself is immediate).
 const LIGHT = new Set(['main', 'loadout', 'setup', 'locker', 'settings', 'howto', 'credits', 'pause']);
-// Stage art rendered from the real game by tools/stage-shots.mjs: <id>-<day|dusk>[-sm].webp (resolved against this
-// module so the UI lab in tools/ finds them too). Missing art falls back to the layout thumbnail.
+// Stage art rendered from the real game: <id>-<day|dusk>[-sm].webp (resolved against this module so the UI lab finds
+// them too). Missing art falls back to the layout thumbnail.
 const STAGE_DIR = new URL('../../assets/stages/', import.meta.url).href;
 const stageArt = (id, time, small) => `${STAGE_DIR}${id}-${time === 'dusk' ? 'dusk' : 'day'}${small ? '-sm' : ''}.webp`;
 const TIME_INFO = {
@@ -42,21 +42,78 @@ const TIPS = [
   'Hold [SHIFT] to dive into your ink — you are nearly invisible while swimming.',
   'Enemy ink slows you down and chips away at your health. Paint over it!',
   'Swim up any wall you have inked to reach high ground.',
-  'Only turf counts when time runs out. Splats just buy you space.',
+  'In Turf War only turf counts when time runs out. Splats just buy you space.',
   'Your special gauge fills as you ink. Press [F] when it glows!',
   'A Splat Bomb costs most of your tank — throw it where it claims the most turf.',
   'Chargers splat in one fully-charged shot. Keep moving and use cover.',
   'Rollers paint huge stripes. Flick the roller to splash foes at range.',
   'Low on ink? Dive in, refill, then push again.',
   'Hold [TAB] to open the big map and spot unpainted turf.',
+  'Zone Control: ink 80% of the live zone to take it — 40% of theirs knocks it back to neutral.',
+  'Zone Control: a side zone on their half counts you down 4× faster than the one on yours.',
+  'Zone Control: lose the zone to the other team and most of what you counted comes back as a penalty.',
+  'Zone Control: while they hold the zone your special charges fast. Team up and break their hold!',
 ];
+// Battle modes offered on the stage select (Zone Control: see src/game/zones.js)
+const ZONE_GLYPH = '<svg class="iw-ico" viewBox="0 0 64 64" aria-hidden="true"><path d="M8 21 V12 Q8 8 12 8 H21 M43 8 H52 Q56 8 56 12 V21 M56 43 V52 Q56 56 52 56 H43 M21 56 H12 Q8 56 8 52 V43" fill="none" stroke="currentColor" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/><rect x="19" y="19" width="26" height="26" rx="5" fill="currentColor"/></svg>';
+const MODE_INFO = {
+  turf: { id: 'turf', label: 'TURF WAR', name: 'Turf War', icon: GLYPHS.drop, text: 'Ink the most ground before the clock runs out.' },
+  zones: { id: 'zones', label: 'ZONE CONTROL', name: 'Zone Control', icon: ZONE_GLYPH, text: 'Hold the live zone to count down from 100 — first to 0 wins.' },
+};
+const modeOf = (m) => (m === 'zones' ? 'zones' : 'turf');
+const ZK = '#15121c';
+const zNum = (x, y, n, size = 16) => `<text x="${x}" y="${y}" text-anchor="middle" font-family="'Titan One', sans-serif" font-size="${size}" fill="#fff" stroke="${ZK}" stroke-width="3.2" paint-order="stroke" stroke-linejoin="round">${n}</text>`;
+const zPill = (x, y, w, hgt, cls, n, size) => `<g transform="translate(${x} ${y})"><rect width="${w}" height="${hgt}" rx="${hgt / 2.6}" fill="${ZK}"/><rect x="2.5" y="2.5" width="${w - 5}" height="${hgt - 5}" rx="${hgt / 3.2}" class="${cls}"/>${zNum(w / 2, hgt * 0.72, n, size)}</g>`;
+const ZONE_FLOOR = `<path d="M10 60 L60 34 L110 60 L60 78 Z" fill="#f4ecdc" stroke="${ZK}" stroke-width="2.5" stroke-linejoin="round"/>`;
+const ZONE_EDGE = `<path d="M30 58 L60 43 L90 58 L60 71 Z" fill="none" stroke="#fff" stroke-width="2.4" stroke-dasharray="5 3" stroke-linejoin="round"/>`;
+const ZONE_RULE_ART = {
+  take: `<svg viewBox="0 0 120 80" aria-hidden="true">${ZONE_FLOOR}
+    <clipPath id="iw-zr-take"><path d="M30 58 L60 43 L90 58 L60 71 Z"/></clipPath>
+    <g clip-path="url(#iw-zr-take)"><path class="iw-fa" d="${blobPath(54, 58, 26, { seed: 3, sy: 0.55, points: 11, wobble: 0.16 })}"/><path class="iw-fb" d="${blobPath(84, 60, 6, { seed: 8, sy: 0.55, points: 8, wobble: 0.25 })}"/></g>${ZONE_EDGE}
+    <g transform="translate(12 9)"><rect width="66" height="13" rx="6.5" fill="${ZK}"/><rect x="3" y="3" width="48" height="7" rx="3.5" class="iw-fa"/><path d="M51.5 1 L51.5 12" stroke="#fff" stroke-width="2"/></g>
+    <g transform="translate(82 6)"><rect width="30" height="19" rx="6" fill="${ZK}"/>${zNum(15, 14.5, '80%', 11)}</g>
+  </svg>`,
+  count: `<svg viewBox="0 0 120 80" aria-hidden="true">
+    ${zPill(8, 10, 48, 30, 'iw-fa', '37', 17)}${zPill(64, 10, 48, 30, 'iw-fb', '100', 15)}
+    <path d="M32 44 L32 60 M25 53 L32 61 L39 53" stroke="${ZK}" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M32 44 L32 60 M25 53 L32 61 L39 53" stroke="#fff" stroke-width="3.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <g transform="translate(46 56)"><rect width="46" height="20" rx="10" fill="#ffd54a" stroke="${ZK}" stroke-width="2.5"/><text x="23" y="14.5" text-anchor="middle" font-family="'Titan One', sans-serif" font-size="11" fill="${ZK}">0 = WIN</text></g>
+  </svg>`,
+  rotate: `<svg viewBox="0 0 120 80" aria-hidden="true">
+    <rect x="18" y="6" width="84" height="68" rx="10" fill="#f4ecdc" stroke="${ZK}" stroke-width="2.5"/>
+    <circle cx="60" cy="67" r="4.5" class="iw-fa" stroke="${ZK}" stroke-width="2"/><circle cx="60" cy="13" r="4.5" class="iw-fb" stroke="${ZK}" stroke-width="2"/>
+    <path d="M49 48 L38 54 M71 32 L82 26" stroke="${ZK}" stroke-width="2.2" stroke-dasharray="3 3" stroke-linecap="round"/>
+    <rect x="49" y="29" width="22" height="22" rx="3" fill="#ffd54a" stroke="${ZK}" stroke-width="2.4"/>
+    <rect x="24" y="48" width="15" height="15" rx="3" fill="rgba(21,18,28,.1)" stroke="${ZK}" stroke-width="2.2" stroke-dasharray="4 3"/>
+    <rect x="81" y="17" width="15" height="15" rx="3" fill="rgba(21,18,28,.1)" stroke="${ZK}" stroke-width="2.2" stroke-dasharray="4 3"/>
+    ${GLYPHS.rotate.replace(/^<svg class="[^"]*"/, `<svg x="51.5" y="31.5" width="17" height="17" style="color:${ZK}"`)}
+    <g transform="translate(20 64)"><rect width="22" height="13" rx="6.5" fill="${ZK}"/>${zNum(11, 10, '2s', 9)}</g>
+    <g transform="translate(92 32)"><rect width="24" height="13" rx="6.5" fill="${ZK}"/>${zNum(12, 10, '½s', 9)}</g>
+  </svg>`,
+  penalty: `<svg viewBox="0 0 120 80" aria-hidden="true">${ZONE_FLOOR}
+    <clipPath id="iw-zr-pen"><path d="M30 58 L60 43 L90 58 L60 71 Z"/></clipPath>
+    <g clip-path="url(#iw-zr-pen)"><path class="iw-fb" d="${blobPath(64, 58, 26, { seed: 21, sy: 0.55, points: 11, wobble: 0.16 })}"/><path class="iw-fa" d="${blobPath(36, 60, 6, { seed: 4, sy: 0.55, points: 8, wobble: 0.25 })}"/></g>${ZONE_EDGE}
+    ${zPill(10, 6, 44, 26, 'iw-fa', '62', 15)}
+    <g transform="translate(58 8)"><rect width="34" height="20" rx="10" fill="#ff4d6a" stroke="${ZK}" stroke-width="2.5"/>${zNum(17, 15, '+12', 11)}</g>
+    <path d="M100 26 L100 10 M94 16 L100 9 L106 16" stroke="#ff4d6a" stroke-width="3.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`,
+};
+// how a Zone Control match was decided, in plain words (winner's view / loser's view)
+const ZONE_REASON = {
+  knockout: ['KNOCKOUT!', 'Knocked out'],
+  time: ["Time's up", "Time's up"],
+  comeback: ['Comeback in overtime!', 'Overtaken in overtime'],
+  retake: ['Held on in overtime', 'Stopped in overtime'],
+  neutralised: ['Held on in overtime', 'Pushed off the zone in overtime'],
+  'overtime-cap': ['Won at the overtime limit', 'Lost at the overtime limit'],
+};
 const DIFF_INFO = {
   easy: { pips: 1, text: 'Relaxed bots with shaky aim. Great for learning the ropes.' },
   normal: { pips: 2, text: 'Balanced bots that push turf and fight back.' },
   hard: { pips: 3, text: 'Sharp, aggressive bots that punish mistakes. Bring your A-game.' },
 };
 const STAT_LABELS = [['range', 'Range'], ['damage', 'Damage'], ['rate', 'Fire rate'], ['mobility', 'Mobility'], ['paint', 'Ink coverage']];
-const KIND_LABEL = { shooter: 'Shooter', roller: 'Roller', charger: 'Charger', blaster: 'Blaster', dualies: 'Dualies', slosher: 'Slosher', splatling: 'Splatling' };
+const KIND_LABEL = { shooter: 'Shooter', roller: 'Roller', charger: 'Charger', blaster: 'Blaster', dualies: 'Dualies', slosher: 'Slosher', splatling: 'Splatling', bucket: 'Bucket', spinner: 'Spinner', twins: 'Pistols', brush: 'Brush' };
 const STAT_ICONS = { range: GLYPHS.target, damage: GLYPHS.bolt, rate: GLYPHS.clock, mobility: GLYPHS.feather, paint: GLYPHS.drop };
 const LOCKER_TABS = [
   { id: 'kids', label: 'SQUIDKIDS', icon: 'users', sections: ['_presets'] },
@@ -65,8 +122,8 @@ const LOCKER_TABS = [
   { id: 'outfit', label: 'OUTFIT', icon: 'shirt', sections: ['outfit'] },
 ];
 const MENU_DESC = {
-  play: 'Pick a stage, day or dusk, and jump into a 4 v 4 Turf War',
-  loadout: 'Choose your weapon: stats, sub and special for every kind',
+  play: 'Pick Turf War or Zone Control, a stage, day or dusk — and jump into a 4 v 4 battle',
+  loadout: 'Choose your weapon, sub and special — or practice with it',
   locker: 'Choose your squidkid — tentacles, headgear, eyes, skin and outfit',
   settings: 'Controls, video, audio and gameplay options',
   howto: 'The rules in 30 seconds, plus every control',
@@ -89,6 +146,9 @@ const SETTINGS_TABS = [
     { key: 'shadows', label: 'Shadows', type: 'toggle', help: 'Soft sun shadows. Turn off for extra speed on older machines.' },
     { key: 'bloom', label: 'Bloom glow', type: 'toggle', help: 'A soft glow around bright ink and specials.' },
     { key: 'showFps', label: 'Show FPS counter', type: 'toggle', help: 'Displays frames per second in the corner during matches.' },
+    { key: 'fpsCap', label: 'Frame rate limit', type: 'seg', options: [[0, 'Max'], [60, '60'], [30, '30']], help: 'Max follows your display (up to 120 Hz on ProMotion Macs). A 60 cap gives steadier pacing and longer battery life.' },
+    // desktop app only (the Electron preload provides window.inkwaveNative)
+    ...(typeof window !== 'undefined' && window.inkwaveNative ? [{ key: 'fullscreen', label: 'Fullscreen', type: 'toggle', help: 'Fill the whole display. Also ⌃⌘F or F11.' }] : []),
   ] },
   { id: 'audio', label: 'Audio', icon: 'speaker', rows: [
     { key: 'master', label: 'Master volume', type: 'slider', min: 0, max: 1, step: 0.05, fmt: pctFmt, help: 'Overall loudness of everything.' },
@@ -112,6 +172,7 @@ const TAB_BLURB = {
 };
 
 const durLabel = (s) => (s < 120 ? `${s} SEC` : `${Math.round(s / 60)} MIN`);
+
 // FNV-1a — the Character's style seed (character.js hashStr) so an unsaved look resolves identically here
 const fnv = (str) => { let x = 2166136261; for (let i = 0; i < str.length; i++) { x ^= str.charCodeAt(i); x = Math.imul(x, 16777619); } return x >>> 0; };
 
@@ -169,6 +230,7 @@ export class Menus {
     if (name === prev && !force) return;
     if (opts.pop) this._stack.pop();
     else if (opts.push && name) this._stack.push(name);
+    else if (opts.under && name) this._stack = [...opts.under, name];
     else this._stack = name ? [name] : [];
     if (prev && this._focus && this._focus.dataset.id) this._focusMem[prev] = this._focus.dataset.id;
     this.current = name;
@@ -227,7 +289,7 @@ export class Menus {
     const byCode = {
       ArrowUp: 'up', KeyW: 'up', ArrowDown: 'down', KeyS: 'down', ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right',
       Enter: 'accept', NumpadEnter: 'accept', Space: 'accept', Escape: 'back', Backspace: 'back',
-      KeyQ: 'tab_prev', KeyE: 'tab_next', PageUp: 'tab_prev', PageDown: 'tab_next', Tab: e.shiftKey ? 'tab_prev' : 'tab_next', KeyR: 'alt',
+      KeyQ: 'tab_prev', KeyE: 'tab_next', PageUp: 'tab_prev', PageDown: 'tab_next', Tab: e.shiftKey ? 'tab_prev' : 'tab_next', KeyP: 'alt', KeyR: 'alt',
     };
     const byKey = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Enter: 'accept', ' ': 'accept', Escape: 'back', Backspace: 'back' };
     const dir = byCode[e.code] || byKey[e.key];
@@ -329,12 +391,13 @@ export class Menus {
     let l = null;
     try { l = this.api.getLoadout && this.api.getLoadout(); } catch (e) { l = null; }
     const w = (l && l.weapon) || 'shooter';
-    return { weapon: this._weapons()[w] ? w : 'shooter' };
+    return { weapon: this._weapons()[w] ? w : 'shooter', sub: (l && l.sub) || null, special: (l && l.special) || null };
   }
   _weapons() { return this.api.weapons || WEAPONS; }
   _weaponOrder() { return this.api.weaponOrder || WEAPON_ORDER; }
   _specials() { return this.api.specials || SPECIALS; }
-  _sub() { return this.api.sub || SUB.bomb; }
+  _sub() { const id = this._loadout().sub, all = this.api.subs || SUB; return (id && all[id]) || this.api.sub || SUB.bomb; }
+  _special() { const lo = this._loadout(), all = this._specials(); return (lo.special && all[lo.special]) || all[(this._weapons()[lo.weapon] || {}).special] || Object.values(all)[0]; }
   _maps() { return this.api.maps || MAPS; }
   _diffs() { return this.api.difficulties || DIFFICULTY; }
   _version() { return this.api.version || VERSION; }
@@ -509,8 +572,7 @@ export class Menus {
     if (this._starting) return true; // launching a match: ignore input under the wipe
     if (s.onNav && s.onNav(dir)) return true;
     if (dir === 'back') { this._back(); return true; }
-    if (dir === 'tab_prev' || dir === 'tab_next') return true;
-    if (dir !== 'accept' && dir !== 'up' && dir !== 'down' && dir !== 'left' && dir !== 'right') return true; // 'alt' etc. unused here
+    if (dir === 'tab_prev' || dir === 'tab_next' || dir === 'alt') return true;
     const f = this._focus && this._focus.isConnected ? this._focus : null;
     const b = f ? this._binds.get(f) : null;
     if (dir === 'accept') {
@@ -735,10 +797,10 @@ export class Menus {
     const prof = this._profile();
     const lo = this._loadout();
     const W = this._weapons()[lo.weapon];
-    const sp = this._specials()[W.special] || Object.values(this._specials())[0];
+    const sp = this._special();
     const sub = this._sub();
     const items = [
-      { id: 'play', label: 'PLAY', sub: 'Turf War · 4 v 4', icon: GLYPHS.play, cls: 'iw-btn--menu iw-btn--xl iw-btn--primary', accept: () => this._go('setup'), sound: 'ui_confirm' },
+      { id: 'play', label: 'PLAY', sub: `${MODE_INFO[modeOf(this._settings().lastMode)].name} · 4 v 4`, icon: GLYPHS.play, cls: 'iw-btn--menu iw-btn--xl iw-btn--primary', accept: () => this._go('setup'), sound: 'ui_confirm' },
       { id: 'loadout', label: 'LOADOUT', icon: weaponIcon(W.kind || lo.weapon), cls: 'iw-btn--menu', accept: () => this._go('loadout') },
       { id: 'locker', label: 'LOCKER', icon: GLYPHS.hanger, cls: 'iw-btn--menu', accept: () => this._go('locker') },
       { id: 'settings', label: 'SETTINGS', icon: GLYPHS.gear, cls: 'iw-btn--menu', accept: () => this._go('settings') },
@@ -775,7 +837,7 @@ export class Menus {
         h('span', { class: 'iw-kitcard__icon', html: weaponIcon(W.kind || lo.weapon) }),
         h('div', null, h('div', { class: 'iw-kitcard__name' }, W.name), h('div', { class: 'iw-kitcard__kind' }, W.class || KIND_LABEL[W.kind] || ''))),
       h('div', { class: 'iw-kitcard__chips' },
-        h('span', { class: 'iw-chip' }, h('i', { html: SUB_ICONS.bomb }), sub.name),
+        h('span', { class: 'iw-chip' }, h('i', { html: SUB_ICONS[sub.id] || SUB_ICONS.bomb }), sub.name),
         h('span', { class: 'iw-chip' }, h('i', { html: specialIcon(sp.id) }), sp.name)));
     const el = h('div', { class: 'iw-screen iw-main' },
       h('div', { class: 'iw-scrim-left' }),
@@ -831,6 +893,7 @@ export class Menus {
     if (!byId(st.mapId)) st.mapId = byId(s.lastStage) ? s.lastStage : maps[0].id;
     st.difficulty = diffs[s.difficulty] ? s.difficulty : 'normal';
     st.duration = durations.includes(s.matchLength) ? s.matchLength : (MATCH.defaultDuration || 180);
+    st.mode = modeOf(s.lastMode);
     const timeOf = (id) => this._stageTime(id);
     const reduced = prefersReducedMotion();
     this._preloadStages();
@@ -981,7 +1044,8 @@ export class Menus {
       c.classList.toggle('is-dusk', t === 'dusk');
       c.classList.toggle('is-sel', c._mid === st.mapId);
     };
-    const listEl = h('div', { class: 'iw-ss__list' }, tickets);
+    // more stages than fit: compact tickets in a scrolling list (the focused one is kept in view)
+    const listEl = h('div', { class: 'iw-ss__list' + (tickets.length > 3 ? ' is-many' : '') }, tickets);
 
     // ---- match options (bot skill + length)
     const dOpts = Object.values(diffs).map((d) => [d.id, h('span', { class: 'iw-diffopt' }, h('span', { class: 'iw-pips' }, Array.from({ length: 3 }, (_, k) => h('i', { class: k < (DIFF_INFO[d.id]?.pips || 2) ? 'on' : '' }))), d.name)]);
@@ -997,9 +1061,21 @@ export class Menus {
     const lenSeg = this._seg(lOpts, st.duration, (v) => {
       st.duration = v; safeCall(() => this.api.setSettings && this.api.setSettings({ matchLength: v })); updateStart();
     });
-    const lenRow = h('div', { class: 'iw-setrow iw-setrow--stack' }, h('div', { class: 'iw-setrow__label' }, h('i', { html: GLYPHS.clock }), 'MATCH LENGTH'), lenSeg.el);
-    this._bind(lenRow, { id: 'length', type: 'row', adjust: lenSeg.adjust, accept: lenSeg.cycle });
+    // Zone Control always runs 5:00 (+ overtime): the length shows locked and never touches the saved Turf War length
+    const zMin = Math.round((ZONES.duration || 300) / 60);
+    const lenLock = h('div', { class: 'iw-lenlock' }, h('b', null, `${zMin}:00`), h('span', null, '+ OVERTIME'), h('em', null, 'ZONE CONTROL'));
+    const lenRow = h('div', { class: 'iw-setrow iw-setrow--stack' }, h('div', { class: 'iw-setrow__label' }, h('i', { html: GLYPHS.clock }), 'MATCH LENGTH'), lenSeg.el, lenLock);
+    const lenLocked = () => { this._sfx('ui_error', 0.15); restartAnim(lenLock, 'is-edge-r'); };
+    this._bind(lenRow, { id: 'length', type: 'row', adjust: (d) => (st.mode === 'zones' ? lenLocked() : lenSeg.adjust(d)), accept: () => (st.mode === 'zones' ? lenLocked() : lenSeg.cycle()) });
     const matchPanel = this._panel('iw-ss__match iw-in iw-in--up', diffRow, dText, lenRow);
+
+    // ---- battle mode: TURF WAR / ZONE CONTROL (top right, over the hero; R / Y cycles it from anywhere)
+    const mOpts = Object.values(MODE_INFO).map((m) => [m.id, h('span', { class: 'iw-segico' }, h('i', { html: m.icon }), m.label)]);
+    const modeText = h('span', { class: 'iw-ss__timetext iw-ss__modetext' });
+    const modeSeg = this._seg(mOpts, st.mode, (v) => setMode(v));
+    const modeRow = h('div', { class: 'iw-ss__mode iw-in iw-in--down' },
+      h('div', { class: 'iw-ss__timehead' }, h('small', null, 'MODE'), this._hint('R', 'Y')), modeSeg.el, modeText);
+    this._bind(modeRow, { id: 'mode', type: 'row', adjust: modeSeg.adjust, accept: modeSeg.cycle });
 
     // ---- your weapon + your look + START
     const lo = this._loadout();
@@ -1025,7 +1101,15 @@ export class Menus {
     start.append(h('span', { class: 'iw-start__charge' }, h('i')), h('span', { class: 'iw-start__ready' }, h('i', { html: GLYPHS.check }), 'READY'), h('span', { class: 'iw-start__chev' }, h('i'), h('i'), h('i')));
     const updateStart = () => {
       const m = byId(st.mapId);
-      startSub.textContent = `${m ? m.name : ''} · ${TIME_INFO[timeOf(st.mapId)].label} · ${diffs[st.difficulty].name} · ${durLabel(st.duration)}`;
+      // mode · stage · time (+ the length Turf War lets you pick; bot skill sits right beside it in its own panel)
+      startSub.textContent = `${MODE_INFO[st.mode].name} · ${m ? m.name : ''} · ${TIME_INFO[timeOf(st.mapId)].label}${st.mode === 'zones' ? '' : ` · ${durLabel(st.duration)}`}`;
+      // long stage names: tighten the line a touch rather than cut it off
+      requestAnimationFrame(() => {
+        const box = startSub.parentElement;
+        if (!box || !box.isConnected) return;
+        box.classList.remove('is-tight');
+        if (box.scrollWidth > box.clientWidth + 1) box.classList.add('is-tight');
+      });
     };
 
     // ---- state changes
@@ -1087,35 +1171,64 @@ export class Menus {
     optDay.addEventListener('click', () => { this._setFocus(tgl); setTime(st.mapId, 'day', 'mouse'); });
     optDusk.addEventListener('click', () => { this._setFocus(tgl); setTime(st.mapId, 'dusk', 'mouse'); });
 
+    const head = this._header(MODE_INFO[st.mode].label, { sub: 'Pick a mode, a stage and the time of day · 4 v 4 against bots' });
+    const headTitle = head.querySelector('.iw-head__title');
     const el = h('div', { class: 'iw-screen iw-setup iw-ss' },
       bg, h('div', { class: 'iw-ss__scrim' }),
-      this._header('TURF WAR', { sub: 'Pick a stage and the time of day · 4 v 4 against bots' }),
+      head,
+      modeRow,
       h('div', { class: 'iw-ss__left' }, h('div', { class: 'iw-seclabel iw-in' }, h('i', { html: GLYPHS.map }), 'STAGES'), listEl, matchPanel),
       hero,
       h('div', { class: 'iw-ss__foot' }, weaponChip, lookChip, start),
-      this._prompts([[['↑', '↓'], 'DPad', 'Stage'], [['←', '→'], null, 'Day · Dusk'], ['Enter', 'A', 'Select'], ['Esc', 'B', 'Back']]));
+      this._prompts([[['↑', '↓'], 'DPad', 'Stage'], [['←', '→'], null, 'Day · Dusk'], ['R', 'Y', 'Mode'], ['Enter', 'A', 'Select'], ['Esc', 'B', 'Back']]));
     el.querySelector('.iw-prompts').children[1].querySelector('.iw-padg').innerHTML = padGlyph('LB') + padGlyph('RB');
+
+    // ---- mode changes: the screen title, the blurb, the locked length, the START line
+    const renderMode = (anim) => {
+      const M = MODE_INFO[st.mode];
+      el.dataset.mode = st.mode;
+      headTitle.querySelector('.iw-display').textContent = M.label;
+      modeText.textContent = M.text;
+      lenRow.classList.toggle('is-locked', st.mode === 'zones');
+      if (anim) { restartAnim(headTitle, 'is-swap'); restartAnim(modeText, 'is-in'); restartAnim(lenRow, 'is-swap'); }
+      updateStart();
+    };
+    const setMode = (v) => {
+      st.mode = modeOf(v);
+      safeCall(() => this.api.setSettings && this.api.setSettings({ lastMode: st.mode }));
+      this._sfx('splat_small', 0.06);
+      renderMode(true);
+      restartAnim(start, 'is-recharge');
+    };
 
     // explicit focus graph (rows with ←/→ adjust would otherwise trap the pad in a column)
     const selTicket = () => tickets.find((x) => x._mid === st.mapId) || tickets[0];
     const graph = new Map();
     tickets.forEach((t, i) => graph.set(t, { up: tickets[i - 1] || null, down: tickets[i + 1] || diffRow }));
-    graph.set(diffRow, { up: selTicket, down: lenRow });
+    const lenOrDiff = () => (st.mode === 'zones' ? diffRow : lenRow);
+    graph.set(tickets[0], { up: modeRow, down: tickets[1] || diffRow });
+    graph.set(diffRow, { up: selTicket, down: () => (st.mode === 'zones' ? start : lenRow) });
     graph.set(lenRow, { up: diffRow, down: start });
-    graph.set(tgl, { up: null, down: start });
-    graph.set(weaponChip, { up: tgl, down: null, left: lenRow, right: lookChip });
+    graph.set(modeRow, { up: null, down: tgl });
+    graph.set(tgl, { up: modeRow, down: start });
+    graph.set(weaponChip, { up: tgl, down: null, left: lenOrDiff, right: lookChip });
     graph.set(lookChip, { up: tgl, down: null, left: weaponChip, right: start });
     graph.set(start, { up: tgl, down: null, left: lookChip, right: null });
 
     tickets.forEach(refreshTicket);
     renderStage(false);
+    renderMode(false);
     showArt('instant');
     setBg();
     return {
       el, initial: selTicket(),
-      onFocus: (f) => { if (f._mid && this._navFocus) select(f._mid, 'nav', f); },
+      onFocus: (f) => {
+        if (f._mid && this._navFocus) select(f._mid, 'nav', f);
+        if (f._mid && listEl.classList.contains('is-many')) f.scrollIntoView?.({ block: 'nearest', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+      },
       onNav: (dir) => {
         if (dir === 'tab_prev' || dir === 'tab_next') { setTime(st.mapId, dir === 'tab_prev' ? 'day' : 'dusk', 'tab'); return true; }
+        if (dir === 'alt') { this._press(modeRow); modeSeg.cycle(); return true; }
         return this._graphNav(graph, dir);
       },
       tick: (dt) => {
@@ -1137,8 +1250,10 @@ export class Menus {
     this._starting = true;
     const st = this._setup;
     const time = this._stageTime(st.mapId);
-    const cfg = { mapId: st.mapId, time, difficulty: st.difficulty, duration: st.duration };
-    safeCall(() => this.api.setSettings && this.api.setSettings({ difficulty: st.difficulty, matchLength: st.duration, lastStage: st.mapId, stageTimes: { ...(st.times || {}) } }));
+    const mode = modeOf(st.mode);
+    // Zone Control has a fixed length (main uses ZONES.duration) and never overwrites the saved Turf War length
+    const cfg = { mapId: st.mapId, time, difficulty: st.difficulty, mode, ...(mode === 'zones' ? {} : { duration: st.duration }) };
+    safeCall(() => this.api.setSettings && this.api.setSettings({ difficulty: st.difficulty, lastStage: st.mapId, lastMode: mode, stageTimes: { ...(st.times || {}) }, ...(mode === 'zones' ? {} : { matchLength: st.duration }) }));
     if (this._scr) {
       this._scr.el.classList.add('is-launch');
       const b = this._scr.el.querySelector('.iw-btn--start');
@@ -1152,6 +1267,7 @@ export class Menus {
       if (this.current === 'setup') this.show(null, { instantLeave: true });
     });
   }
+
 
   /** Put a live 3D portrait of the player's squidkid into `host` (replacing its fallback squid glyph) when the
    *  showcase can render one (the UI lab can't → the glyph stays). */
@@ -1457,24 +1573,25 @@ export class Menus {
     };
   }
 
-  // ================================================================ SCREEN: loadout (weapon select)
-  _scr_loadout() {
+
+  // ================================================================ SCREEN: loadout
+  _scr_loadout(opts = {}) {
+    const inPractice = !!safeCall(() => this.api.isPractice && this.api.isPractice());
     const Ws = this._weapons();
     const order = this._weaponOrder().filter((id) => Ws[id]);
     let equipped = this._loadout().weapon;
     let shown = equipped;
     const specials = this._specials();
-    const subs = this.api.subs || SUB;
     const classOf = (w) => w.class || KIND_LABEL[w.kind] || (w.kind ? w.kind[0].toUpperCase() + w.kind.slice(1) : '');
-    const subOf = (w) => (w.sub && subs[w.sub]) || this._sub();
     // "NEW" stickers for weapons the player hasn't looked at yet (the original four count as seen)
     const s0 = this._settings();
     const seen = new Set(Array.isArray(s0.seenWeapons) ? s0.seenWeapons : ['shooter', 'roller', 'charger', 'blaster']);
     const markSeen = (id) => { if (seen.has(id)) return; seen.add(id); this._setSetting('seenWeapons', [...seen]); };
+    const prof = this._profile();
 
-    // ---- weapon cards (grid scales 4 → 9+: 4 columns up to 8, then 5)
+    // ---- weapon cards (grid scales 4 → 9+: 4 columns up to 8, then 5, compact past one screen)
     const n = order.length;
-    const cols = n <= 4 ? Math.max(1, n) : n <= 8 ? 4 : 5;
+    const cols = n <= 4 ? Math.max(1, n) : n <= 8 ? 4 : n <= 12 ? 6 : 5;   // 9–12 weapons: two rows of six
     const compact = n > cols;
     const cards = order.map((id, i) => {
       const w = Ws[id];
@@ -1510,22 +1627,53 @@ export class Menus {
     const eqBadge = h('span', { class: 'iw-wd__eq' }, h('i', { html: GLYPHS.check }), 'EQUIPPED');
     const cmpBadge = h('span', { class: 'iw-wd__cmp' }, h('i', { class: 'iw-wd__cmpdot' }), 'vs ', h('b'));
     const blurb = h('p', { class: 'iw-wd__blurb' });
-    const statKeys = [...STAT_LABELS.map(([k]) => k), ...Object.keys((Ws[order[0]] && Ws[order[0]].stats) || {}).filter((k) => !STAT_LABELS.some(([x]) => x === k))].slice(0, 6);
-    const statEls = statKeys.map((k, i) => {
-      const label = (STAT_LABELS.find(([x]) => x === k) || [k, k[0].toUpperCase() + k.slice(1)])[1];
+    const statEls = STAT_LABELS.map(([k, label], i) => {
       const bar = h('span', { class: 'iw-stat__bar' }, h('i', { class: 'iw-stat__ghost' }), h('i', { class: 'iw-stat__fill' }), h('i', { class: 'iw-stat__ticks' }));
       const num = h('b', { class: 'iw-stat__num' }, '0');
       const delta = h('em', { class: 'iw-stat__delta' });
       const row = h('div', { class: 'iw-stat', style: { '--i': i } }, h('span', { class: 'iw-stat__label' }, h('i', { html: STAT_ICONS[k] || GLYPHS.star }), label), bar, num, delta);
-      return { k, row, bar, num, delta, cur: 0, target: 0, shownInt: -1, delay: 0.25 + i * 0.07 };
+      return { k, row, bar, num, delta, cur: 0, target: 0, shownInt: -1 };
     });
-    const subIcon = h('span', { class: 'iw-kit__icon' }), subName = h('b'), subText = h('span');
-    const subChip = h('div', { class: 'iw-kit' }, subIcon, h('div', null, h('small', null, 'SUB WEAPON'), subName, subText));
-    const spIcon = h('span', { class: 'iw-kit__icon is-sp' });
+    // sub picker: Enter / click cycles, ← → steps through every sub (saved to the profile)
+    const subIcon = h('span', { class: 'iw-kit__icon' }), subName = h('b'), subBlurb = h('span');
+    const subChip = h('div', { class: 'iw-kit iw-kit--pick' }, subIcon,
+      h('div', null, h('small', null, 'SUB ', h('i', { class: 'iw-kit__hint' }, '◀ ▶ CHANGE')), subName, subBlurb));
+    const subOrder = this.api.subOrder || ['bomb'];
+    const renderSub = () => {
+      const sb = this._sub();
+      subIcon.innerHTML = SUB_ICONS[sb.id] || SUB_ICONS.bomb;
+      subName.textContent = sb.name;
+      subBlurb.textContent = `${sb.blurb || ''} Uses ${Math.round(sb.inkCost)}% of your ink.`;
+    };
+    const cycleSub = (d) => {
+      const i = subOrder.indexOf(this._sub().id);
+      safeCall(() => this.api.setLoadout && this.api.setLoadout({ sub: subOrder[(i + d + subOrder.length) % subOrder.length] }));
+      this._sfx('ui_toggle');
+      renderSub();
+      restartAnim(subChip, 'is-swap');
+    };
+    this._bind(subChip, { id: 'subpick', type: 'row', accept: () => cycleSub(1), adjust: (d) => cycleSub(d) });
+    renderSub();
+    const spIcon = h('span', { class: 'iw-kit__icon' });
     const spName = h('b'); const spBlurb = h('span'); const spCost = h('em', { class: 'iw-kit__cost' });
-    const spChip = h('div', { class: 'iw-kit' }, spIcon, h('div', null, h('small', null, 'SPECIAL'), h('div', { class: 'iw-kit__row' }, spName, spCost), spBlurb));
-    const detail = this._panel('iw-wd iw-in iw-in--up',
-      h('div', { class: 'iw-wd__head' }, h('div', { class: 'iw-wd__title' }, kind, nm), h('div', { class: 'iw-wd__badges' }, cmpBadge, eqBadge)),
+    const spChip = h('div', { class: 'iw-kit iw-kit--pick' }, spIcon, h('div', null, h('small', null, 'SPECIAL ', h('i', { class: 'iw-kit__hint' }, '◀ ▶ CHANGE')), h('div', { class: 'iw-kit__row' }, spName, spCost), spBlurb));
+    const spOrder = this.api.specialOrder || Object.keys(specials);
+    const renderSp = () => {
+      const sp = this._special();
+      spIcon.innerHTML = specialIcon(sp.id);
+      spName.textContent = sp.name;
+      spBlurb.textContent = sp.blurb || '';
+    };
+    const cycleSp = (d) => {
+      const i = spOrder.indexOf(this._special().id);
+      safeCall(() => this.api.setLoadout && this.api.setLoadout({ special: spOrder[(i + d + spOrder.length) % spOrder.length] }));
+      this._sfx('ui_toggle');
+      renderSp();
+      restartAnim(spChip, 'is-swap');
+    };
+    this._bind(spChip, { id: 'specialpick', type: 'row', accept: () => cycleSp(1), adjust: (d) => cycleSp(d) });
+    const detail = this._panel('iw-wd iw-in is-enter',
+      h('div', { class: 'iw-wd__head' }, h('div', null, kind, nm), h('div', { class: 'iw-wd__badges' }, cmpBadge, eqBadge)),
       blurb,
       h('div', { class: 'iw-wd__stats' }, statEls.map((s) => s.row)),
       h('div', { class: 'iw-wd__kits' }, subChip, spChip));
@@ -1554,46 +1702,64 @@ export class Menus {
         s.delta.textContent = up ? `+${d}` : down ? `${d}` : '';
         s.delta.className = 'iw-stat__delta' + (up ? ' is-up' : down ? ' is-down' : '');
       }
-      const sub = subOf(w);
-      subIcon.innerHTML = SUB_ICONS[sub.id] || SUB_ICONS.bomb;
-      subName.textContent = sub.name;
-      subText.textContent = `Costs ${Math.round(sub.inkCost || 70)}% of your ink tank. Hold to aim, release to throw.`;
-      const sp = specials[w.special] || Object.values(specials)[0];
-      spIcon.innerHTML = specialIcon(sp.id);
-      spName.textContent = sp.name;
-      spBlurb.textContent = sp.blurb || '';
+      renderSp();
+      renderSub();
       spCost.textContent = w.specialCost ? `${Math.round(w.specialCost)}p` : '';
       spCost.title = 'Turf points to fill the special gauge';
-      if (!first) restartAnim(detail, 'is-swap');
       markSeen(id);
+      if (!first) restartAnim(detail, 'is-swap');
     };
     render(equipped);
 
+    // practice: from the lobby it starts a solo session on a random stage; mid-practice it drops you back in (whatever
+    // you equip here is already in your hands)
+    const goPractice = () => {
+      if (this._starting) return;
+      if (inPractice) { this._resume(); return; }
+      this._starting = true;
+      this._burstAt(practiceBtn, { count: 16, dist: 10, size: 1.3, ring: true });
+      this._sfx('splat_big');
+      this._runWipe(() => {
+        this._starting = false;
+        safeCall(() => this.api.startPractice && this.api.startPractice());
+        if (this.current === 'loadout') this.show(null, { instantLeave: true });
+      });
+    };
+    const practiceBtn = this._btn({
+      id: 'practice', icon: GLYPHS.play, cls: 'iw-btn--menu iw-btn--primary iw-loadout__practice iw-in iw-in--down', sound: 'ui_confirm', tilt: -1.2,
+      label: inPractice ? 'BACK TO PRACTICE' : 'PRACTICE',
+      sub: inPractice ? 'Your picks are already equipped' : 'Try this loadout on a random stage',
+      accept: goPractice,
+    });
     // ---- your squidkid (→ locker)
-    const prof = this._profile();
     const lookAv = h('span', { class: 'iw-lchip__av' }, h('span', { class: 'iw-lchip__blob', html: splatSVG({ seed: 17, cls: 'iw-fa', r: 62, arms: 8, drops: 0 }) }), h('span', { class: 'iw-lchip__squid', html: SQUID }));
-    const lookChip = h('button', { class: 'iw-wchip iw-lchip iw-lchip--sm iw-in iw-in--down' }, lookAv,
+    const lookChip = inPractice ? null : h('button', { class: 'iw-wchip iw-lchip iw-lchip--sm iw-in iw-in--down' }, lookAv,
       h('span', { class: 'iw-wchip__text' }, h('small', null, 'SQUIDKID'), h('b', null, prof.name)),
       h('span', { class: 'iw-wchip__edit' }, h('i', { html: GLYPHS.hanger }), 'LOCKER'));
-    this._fx(lookChip);
-    this._bind(lookChip, { id: 'look', accept: () => { this._sfx('ui_click'); this._go('locker'); } });
-    this._portraitInto(lookAv, { kind: 'head', size: 128 });
-
+    if (lookChip) {
+      this._fx(lookChip);
+      this._bind(lookChip, { id: 'look', accept: () => { this._sfx('ui_click'); this._go('locker'); } });
+      this._portraitInto(lookAv, { kind: 'head', size: 128 });
+    }
     const grid = h('div', { class: 'iw-wgrid' + (compact ? ' is-compact' : ''), style: { '--cols': cols } }, cards);
     const el = h('div', { class: 'iw-screen iw-loadout' },
       h('div', { class: 'iw-scrim-left' }),
-      this._header('LOADOUT', { sub: `${n} weapons · every one comes with a sub and a special` }),
+      this._header('LOADOUT', { sub: inPractice ? 'Swap weapons and subs mid-practice — changes apply straight away' : 'Pick your weapon, sub and special — your squidkid shows it off on the right' }),
+      practiceBtn,
       h('div', { class: 'iw-loadout__body' },
         h('div', { class: 'iw-seclabel iw-in' }, h('i', { html: WEAPON_ICONS.shooter }), 'WEAPON', h('span', { class: 'iw-seclabel__count' }, `${order.indexOf(equipped) + 1} / ${n}`)),
         grid,
         detail),
-      h('div', { class: 'iw-loadout__look' }, lookChip),
-      this._prompts([['Enter', 'A', 'Equip'], [['←', '→'], 'DPad', 'Browse'], ['Esc', 'B', 'Back']]));
+      lookChip ? h('div', { class: 'iw-loadout__look' }, lookChip) : null,
+      this._prompts(opts.quick ? [['Enter', 'A', 'Equip'], ['Esc', 'B', 'Resume']] : [['Enter', 'A', 'Equip'], ['P', 'Y', inPractice ? 'Resume' : 'Practice'], ['Esc', 'B', 'Back']]));
     const countEl = el.querySelector('.iw-seclabel__count');
     let enterT = 0;
     return {
       el,
       initial: cards[order.indexOf(equipped)] || cards[0],
+      onNav: (dir) => { if (dir === 'alt') { this._sfx('ui_confirm'); this._press(practiceBtn); goPractice(); return true; } return false; },
+      // opened straight from practice play (L / View): back goes back into the game
+      onBack: opts.quick ? () => { if (performance.now() - this._shownAt > 200) this._resume(); } : undefined,
       onFocus: (f) => {
         if (f._wid && f._wid !== shown) render(f._wid);
         if (f._wid) { countEl.textContent = `${order.indexOf(f._wid) + 1} / ${n}`; if (f.classList.contains('is-new')) { f.classList.remove('is-new'); f.classList.add('was-new'); } }
@@ -1607,15 +1773,18 @@ export class Menus {
       },
       tick: (dt) => {
         enterT += dt;
-        if (!entered) return;
+        if (enterT > 1.6 && detail.classList.contains('is-enter')) detail.classList.remove('is-enter');
         for (const s of statEls) {
-          if (enterT < s.delay) continue;
+          if (!entered) continue;
+          const delay = detail.classList.contains('is-enter') ? 0.3 + s.row.style.getPropertyValue('--i') * 0.07 : 0;
+          if (enterT < delay) continue;
           s.cur += (s.target - s.cur) * (1 - Math.exp(-dt * 9));
           if (Math.abs(s.target - s.cur) < 0.4) s.cur = s.target;
-          const v = Math.round(s.cur);
-          if (v !== s.shownInt) { s.shownInt = v; s.num.textContent = String(v); }
+          const n = Math.round(s.cur);
+          if (n !== s.shownInt) { s.shownInt = n; s.num.textContent = String(n); }
         }
       },
+      destroy: () => {},
     };
   }
 
@@ -1893,6 +2062,7 @@ export class Menus {
       ['Jump', null, K('SPACE'), padGlyph('A')],
       ['Aim bomb · release to throw', 'hold', K('RMB', 'or', 'E'), padGlyph('RB')],
       ['Special', null, K('F', 'or', 'Q'), padGlyph('Y')],
+      ['"Yeah!" cheer', null, K('C'), padGlyph('LS').replace(/>[^<]*</, '>↑<')],
       ['Map', 'hold', K('TAB'), padGlyph('View')],
       ['Pause', null, K('ESC'), padGlyph('Start')],
     ];
@@ -1910,11 +2080,36 @@ export class Menus {
       ['enemy', 'Avoid enemy ink', 'Enemy ink slows you down and hurts. Paint over it to take the ground back.'],
       ['climb', 'Climb inked walls', 'Ink a wall, then swim straight up it as a squid to reach high ground.'],
     ];
-    const cards = rules.map(([art, title, text], i) => h('div', { class: 'iw-rule iw-in iw-in--pop', style: { '--tilt': `${[-1.2, 1, 0.8, -1][i]}deg` } },
-      h('div', { class: 'iw-rule__art', html: RULE_ART[art] }),
+    const zoneRules = [
+      ['take', 'Take the zone', 'Ink 80% of the live zone to take it. Ink 40% of a zone they hold to knock it back to neutral.'],
+      ['count', 'Count down from 100', 'Hold the zone and your count ticks down — 1 a second at the centre. First team to 0 wins.'],
+      ['rotate', 'Zones rotate', 'Every 30–60 s the live zone swaps between the centre and a side zone: 1 point per 2 s on your half, per ½ s on theirs.'],
+      ['penalty', 'Don’t lose it', 'If they take the zone from you, ¾ of what you counted since you took it comes back as a penalty.'],
+    ];
+    const card = ([art, title, text], i, zones) => h('div', { class: 'iw-rule iw-in iw-in--pop', style: { '--tilt': `${[-1.2, 1, 0.8, -1][i]}deg` } },
+      h('div', { class: 'iw-rule__art' + (zones ? ' is-zone' : ''), html: zones ? ZONE_RULE_ART[art] : RULE_ART[art] }),
       h('div', { class: 'iw-rule__num' }, String(i + 1)),
       h('div', { class: 'iw-rule__title' }, title),
-      h('p', { class: 'iw-rule__text' }, text)));
+      h('p', { class: 'iw-rule__text' }, text));
+    const zoneNotes = () => h('div', { class: 'iw-howto__notes iw-in iw-in--up' },
+      h('div', { class: 'iw-hnote' }, h('i', { html: GLYPHS.bolt }), h('span', null, h('b', null, 'Specials charge fast'), ' while the other team holds the zone — use them to break in.')),
+      h('div', { class: 'iw-hnote' }, h('i', { html: GLYPHS.clock }), h('span', null, h('b', null, 'Overtime:'), ' at time up, the team behind plays on while it holds the zone.')));
+    const m0 = G.match && !G.match.attract && !G.match.practice ? G.match.mode : this._settings().lastMode;
+    let rulesMode = modeOf(m0);
+    const rulesEl = h('div', { class: 'iw-howto__rules' });
+    const notesSlot = h('div', { class: 'iw-howto__noteslot' });
+    const renderRules = (anim) => {
+      const zones = rulesMode === 'zones';
+      rulesEl.replaceChildren(...(zones ? zoneRules : rules).map((r, i) => card(r, i, zones)));
+      notesSlot.replaceChildren(...(zones ? [zoneNotes()] : []));
+      if (headSub) headSub.textContent = `${MODE_INFO[rulesMode].name} in 30 seconds`;
+      if (anim) restartAnim(rulesEl, 'is-swap');
+    };
+    const rOpts = Object.values(MODE_INFO).map((mi) => [mi.id, h('span', { class: 'iw-segico' }, h('i', { html: mi.icon }), mi.label)]);
+    const rSeg = this._seg(rOpts, rulesMode, (v) => { rulesMode = modeOf(v); renderRules(true); });
+    const rulesRow = h('div', { class: 'iw-ctl-switch iw-howto__modes iw-in' }, rSeg.el);
+    this._bind(rulesRow, { id: 'rules', type: 'row', adjust: rSeg.adjust, accept: rSeg.cycle });
+    let headSub = null;
     let mode = this._input;
     const listWrap = h('div', { class: 'iw-ctl-wrap' });
     const renderList = () => { listWrap.innerHTML = ''; listWrap.appendChild(this._controlsList(mode)); restartAnim(listWrap, 'is-in'); };
@@ -1922,18 +2117,23 @@ export class Menus {
     const segRow = h('div', { class: 'iw-ctl-switch' }, seg.el);
     this._bind(segRow, { id: 'scheme', type: 'row', adjust: seg.adjust, accept: seg.cycle });
     renderList();
+    const head = this._header('HOW TO PLAY', { sub: `${MODE_INFO[rulesMode].name} in 30 seconds` });
+    headSub = head.querySelector('.iw-head__sub');
+    renderRules(false);
     const el = h('div', { class: 'iw-screen iw-howto' },
       h('div', { class: 'iw-scrim-full' }),
-      this._header('HOW TO PLAY', { sub: 'Turf War in 30 seconds' }),
+      head,
       h('div', { class: 'iw-howto__body' },
-        h('div', { class: 'iw-howto__rules' }, cards),
+        h('div', { class: 'iw-howto__left' }, rulesRow, rulesEl, notesSlot),
         this._panel('iw-howto__ctl iw-in iw-in--right', h('div', { class: 'iw-seclabel' }, h('i', { html: GLYPHS.gamepad }), 'CONTROLS'), segRow, listWrap)),
-      this._prompts([[['←', '→'], 'DPad', 'Switch controls'], ['Esc', 'B', 'Back']]));
+      this._prompts([[['←', '→'], 'DPad', 'Switch'], [['↑', '↓'], null, 'Rules · Controls'], ['R', 'Y', 'Mode'], ['Esc', 'B', 'Back']]));
     return {
       el, initial: segRow,
       onNav: (dir) => {
         if (dir === 'tab_prev' || dir === 'tab_next') { seg.adjust(dir === 'tab_next' ? 1 : -1); return true; }
-        if (dir === 'up' || dir === 'down') return true; // only one control on this screen
+        if (dir === 'alt') { this._press(rulesRow); rSeg.cycle(); return true; }
+        // two switches on this screen: the rules' mode (left) and the control scheme (right)
+        if (dir === 'up' || dir === 'down') { const to = this._focus === rulesRow ? segRow : rulesRow; if (to !== this._focus) this._moveFocus(to, dir); return true; }
         return false;
       },
     };
@@ -1946,6 +2146,7 @@ export class Menus {
     const roll = h('div', { class: 'iw-cred__roll' },
       h('div', { class: 'iw-cred__logo', html: logoMarkup(GAME_TITLE, GAME_SUBTITLE, 'md') }),
       h('p', { class: 'iw-cred__lead' }, 'An original 4 v 4 turf-war shooter.'),
+      sec('Original game', 'INKWAVE by Jayden Davis', h('p', { class: 'dim' }, 'MIT License · github.com/jaydendavisnc/inkwave')),
       sec('Made with', 'Procedural everything — squidkids, weapons, stage, ink, music and sound are all generated in code.'),
       sec('Rendering', 'three.js', h('p', { class: 'dim' }, 'by the three.js authors & contributors')),
       sec('Typography', 'Titan One — Font Diner', 'Rubik — Hubert & Fischer', h('p', { class: 'dim' }, 'SIL Open Font License')),
@@ -1997,8 +2198,13 @@ export class Menus {
         const game = G.game || {};
         const hex = G.teamHex || [];
         const [a, b] = this._accent();
+        let zones = null;
+        if (m.mode === 'zones' && m.zones && m.zones.state) {
+          const z = m.zones.state();
+          zones = { count: z.count, penalty: [0, 1].map((t) => Math.max(0, z.total[t] - z.count[t])), total: z.total, owner: z.owner, active: z.active, overtime: !!z.overtime, overtimeT: z.overtimeT };
+        }
         return {
-          live: true, time: Math.max(0, +m.time || 0), duration: Math.max(1, +m.duration || 180),
+          live: true, time: Math.max(0, +m.time || 0), duration: Math.max(1, +m.duration || 180), mode: modeOf(m.mode), zones,
           map: (game.mapDef && game.mapDef.name) || '', difficulty: m.opts && m.opts.difficulty,
           colors: [toHex(hex[0] || a), toHex(hex[1] || b)],
           names: (game.palette && game.palette.names) || this._accentNames(),
@@ -2026,12 +2232,15 @@ export class Menus {
   }
 
   _scr_pause() {
+    if (safeCall(() => this.api.isPractice && this.api.isPractice())) return this._scr_pausePractice();
+    const snap = this._matchSnapshot();
+    const zoneMode = snap.mode === 'zones' && !!snap.zones;
     const items = [
       { id: 'resume', label: 'RESUME', icon: GLYPHS.play, cls: 'iw-btn--menu iw-btn--primary', accept: () => this._resume(), sound: null },
       { id: 'settings', label: 'SETTINGS', icon: GLYPHS.gear, cls: 'iw-btn--menu', accept: () => this._go('settings') },
       { id: 'howto', label: 'HOW TO PLAY', icon: GLYPHS.question, cls: 'iw-btn--menu', accept: () => this._go('howto') },
       { id: 'quit', label: 'QUIT MATCH', icon: GLYPHS.close, cls: 'iw-btn--menu iw-btn--danger', accept: () => this._openModal({
-        title: 'QUIT MATCH?', text: 'You will leave this Turf War and head back to the lobby. Your turf will not count.', danger: true,
+        title: 'QUIT MATCH?', text: zoneMode ? 'You will leave this Zone Control match and head back to the lobby. It will not count.' : 'You will leave this Turf War and head back to the lobby. Your turf will not count.', danger: true,
         buttons: [
           { label: 'KEEP PLAYING', accept: () => this._closeModal(), sound: null },
           { label: 'QUIT', cls: 'iw-btn--danger', sound: 'ui_confirm', accept: () => {
@@ -2046,18 +2255,47 @@ export class Menus {
     const btns = items.map((it, i) => { const b = this._btn({ ...it, tilt: tilts[i] }); b.classList.add('iw-in', 'iw-in--left'); return b; });
 
     // ---- live match panel
-    const snap = this._matchSnapshot();
     const selfP = snap.players.find((p) => p.isSelf) || snap.players[0] || { team: 0, name: 'You' };
     const diff = snap.difficulty && this._diffs()[snap.difficulty];
     const clockNum = h('b', { class: 'iw-pclock__num' }, fmtTime(snap.time));
     const clockArc = h('i', { class: 'iw-pclock__arc' });
-    const clock = h('div', { class: 'iw-pclock' }, h('span', { class: 'iw-pclock__ring' }, clockArc), h('div', { class: 'iw-pclock__txt' }, clockNum, h('small', null, 'LEFT')));
+    const clockLbl = h('small', null, 'LEFT');
+    const clock = h('div', { class: 'iw-pclock' }, h('span', { class: 'iw-pclock__ring' }, clockArc), h('div', { class: 'iw-pclock__txt' }, clockNum, clockLbl));
+    // Zone Control: both teams' countdowns (+ penalty), who holds the live objective, overtime
+    let zoneStrip = null, zoneRefresh = null;
+    if (zoneMode) {
+      const side = (t) => {
+        const num = h('b', { class: 'iw-pzone__num' }), pen = h('span', { class: 'iw-pzone__pen' });
+        const el = h('div', { class: `iw-pzone__team iw-pzone__team--${t ? 'b' : 'a'}` },
+          h('span', { class: 'iw-pzone__name' }, h('i', { class: 'iw-roster__dot' }), snap.names[t] || TEAM_NAMES[t], h('i', { class: 'iw-pzone__crown', html: GLYPHS.crown })),
+          h('span', { class: 'iw-pzone__score' }, num, pen));
+        return { el, num, pen };
+      };
+      const za = side(0), zb = side(1);
+      const objName = h('b'), objState = h('span', { class: 'iw-pzone__state' });
+      const obj = h('div', { class: 'iw-pzone__obj' }, h('i', { class: 'iw-pzone__ico', html: ZONE_GLYPH }), objName, objState);
+      zoneStrip = h('div', { class: 'iw-pzone' }, za.el, obj, zb.el);
+      zoneRefresh = (z) => {
+        for (const [t, x] of [[0, za], [1, zb]]) {
+          x.num.textContent = String(z.count[t]);
+          x.pen.textContent = z.penalty[t] > 0 ? `+${z.penalty[t]}` : '';
+          x.el.classList.toggle('has-pen', z.penalty[t] > 0);
+          x.el.classList.toggle('is-ahead', z.total[t] < z.total[1 - t]);
+          x.el.classList.toggle('is-holding', z.owner === t);
+        }
+        const names = snap.names;
+        objName.textContent = z.active === 'center' ? 'CENTRE ZONE' : `${(names[z.active === 'sideA' ? 0 : 1] || TEAM_NAMES[z.active === 'sideA' ? 0 : 1]).toUpperCase()} SIDE`;
+        objState.textContent = z.owner >= 0 ? `HELD BY ${(names[z.owner] || TEAM_NAMES[z.owner]).toUpperCase()}` : 'NEUTRAL';
+        obj.dataset.owner = z.owner < 0 ? 'n' : z.owner ? 'b' : 'a';
+        zoneStrip.classList.toggle('is-ot', !!z.overtime);
+      };
+    }
     const stat = (cls, icon, label) => {
       const b = h('b');
       const n = h('span', { class: `iw-pstat ${cls}` }, h('i', { html: icon }), b, h('small', null, label));
       return { el: n, b };
     };
-    const sTurf = stat('iw-pstat--turf', GLYPHS.drop, 'TURF'), sSplat = stat('', SPLAT_ICON, 'SPLATS'), sDeath = stat('', DEATH_ICON, 'SPLATTED'), sSp = stat('iw-pstat--sp', specialIcon((this._weapons()[selfP.weapon] || {}).special), 'SPECIAL');
+    const sTurf = stat('iw-pstat--turf', GLYPHS.drop, 'TURF'), sSplat = stat('', SPLAT_ICON, 'SPLATS'), sDeath = stat('', DEATH_ICON, 'SPLATTED'), sSp = stat('iw-pstat--sp', specialIcon((G.local && G.local.specialId) || (this._weapons()[selfP.weapon] || {}).special), 'SPECIAL');
     const you = h('div', { class: 'iw-pyou' },
       h('span', { class: 'iw-pyou__av', html: SQUID }),
       h('div', { class: 'iw-pyou__id' }, h('small', null, 'YOUR MATCH'), h('b', null, selfP.name || 'You')),
@@ -2082,19 +2320,23 @@ export class Menus {
     const matchPanel = this._panel('iw-pmatch iw-panel--flat iw-in iw-in--right',
       h('div', { class: 'iw-pmatch__top' },
         h('div', { class: 'iw-pmatch__info' },
-          h('div', { class: 'iw-pmatch__mode' }, h('span', { class: 'iw-pmatch__tag' }, 'TURF WAR'), diff ? h('span', { class: 'iw-pmatch__diff' }, h('i', { html: GLYPHS.bot }), `${diff.name} bots`) : null),
-          h('div', { class: 'iw-pmatch__map' }, h('i', { html: GLYPHS.map }), snap.map || 'Turf War')),
+          h('div', { class: 'iw-pmatch__mode' }, h('span', { class: 'iw-pmatch__tag' }, zoneMode ? 'ZONE CONTROL' : 'TURF WAR'), diff ? h('span', { class: 'iw-pmatch__diff' }, h('i', { html: GLYPHS.bot }), `${diff.name} bots`) : null),
+          h('div', { class: 'iw-pmatch__map' }, h('i', { html: GLYPHS.map }), snap.map || (zoneMode ? 'Zone Control' : 'Turf War'))),
         clock),
-      you, teams, ctlWrap);
+      zoneStrip, you, teams, ctlWrap);
     colorVars(matchPanel, 'ta', snap.colors[0]);
     colorVars(matchPanel, 'tb', snap.colors[1]);
     colorVars(matchPanel, 'self', snap.colors[selfP.team] || snap.colors[0]);
 
     const refresh = (s) => {
       const tLeft = s.time, frac = clamp(tLeft / s.duration);
-      clockNum.textContent = fmtTime(tLeft);
-      clock.style.setProperty('--f', frac.toFixed(4));
-      clock.classList.toggle('is-low', tLeft <= 60);
+      const ot = !!(zoneMode && s.zones && s.zones.overtime);
+      clockNum.textContent = ot ? 'OT' : fmtTime(tLeft);
+      clockLbl.textContent = ot ? 'OVERTIME' : 'LEFT';
+      clock.style.setProperty('--f', ot ? '1' : frac.toFixed(4));
+      clock.classList.toggle('is-low', tLeft <= 60 || ot);
+      clock.classList.toggle('is-ot', ot);
+      if (zoneRefresh && s.zones) zoneRefresh(s.zones);
       const me = s.players.find((p) => p.isSelf) || selfP;
       sTurf.b.innerHTML = `${fmtInt(me.turf || 0)}<small>p</small>`;
       sSplat.b.textContent = String(me.splats || 0);
@@ -2138,6 +2380,59 @@ export class Menus {
     };
   }
 
+  // Practice pause: loadout swaps, a clean stage, a new stage — never a trip back to the lobby
+  _scr_pausePractice() {
+    const info = safeCall(() => this.api.practiceInfo && this.api.practiceInfo()) || {};
+    const items = [
+      { id: 'resume', label: 'RESUME', icon: GLYPHS.play, cls: 'iw-btn--menu iw-btn--primary', accept: () => this._resume(), sound: null },
+      { id: 'loadout', label: 'CHANGE LOADOUT', icon: weaponIcon((this._weapons()[info.weapon] || {}).kind || info.weapon || 'shooter'), cls: 'iw-btn--menu', accept: () => this._go('loadout') },
+      { id: 'reset', label: 'RESET STAGE', icon: GLYPHS.reset, cls: 'iw-btn--menu', accept: () => { safeCall(() => this.api.practiceReset && this.api.practiceReset()); this._resume(); } },
+      { id: 'stage', label: 'NEW STAGE', icon: GLYPHS.map, cls: 'iw-btn--menu', accept: () => {
+        if (this._starting) return;
+        this._starting = true;
+        this._runWipe(() => { this._starting = false; safeCall(() => this.api.practiceNewStage && this.api.practiceNewStage()); if (this.current === 'pause') this.show(null, { instantLeave: true }); });
+      } },
+      { id: 'settings', label: 'SETTINGS', icon: GLYPHS.gear, cls: 'iw-btn--menu', accept: () => this._go('settings') },
+      { id: 'quit', label: 'END PRACTICE', icon: GLYPHS.close, cls: 'iw-btn--menu iw-btn--danger', accept: () => { safeCall(() => this.api.quitPractice && this.api.quitPractice()); } },
+    ];
+    const tilts = [-1.8, 1.2, -1, 1.4, -1.2, 1];
+    const btns = items.map((it, i) => { const b = this._btn({ ...it, tilt: tilts[i] }); b.classList.add('iw-in', 'iw-in--left'); return b; });
+
+    const W = this._weapons()[info.weapon] || {};
+    const S = (this.api.subs || {})[info.sub] || this._sub();
+    const sp = this._specials()[info.special] || this._specials()[W.special] || {};
+    const kit = (label, icon, name, blurb) => h('div', { class: 'iw-kit' }, h('span', { class: 'iw-kit__icon', html: icon }), h('div', null, h('small', null, label), h('b', null, name || ''), h('span', null, blurb || '')));
+    const [a] = this._accent();
+    const hex = (G.teamHex || [])[0];
+    const ctlWrap = h('div', { class: 'iw-pctl' }, h('div', { class: 'iw-seclabel' }, h('i', { html: GLYPHS.gamepad }), 'QUICK CONTROLS'), this._controlsList(this._input, true));
+    const panel = this._panel('iw-pmatch iw-ppractice iw-panel--flat iw-in iw-in--right',
+      h('div', { class: 'iw-pmatch__top' },
+        h('div', { class: 'iw-pmatch__info' },
+          h('div', { class: 'iw-pmatch__mode' }, h('span', { class: 'iw-pmatch__tag' }, 'PRACTICE'), h('span', { class: 'iw-pmatch__diff' }, 'No enemies · no clock')),
+          h('div', { class: 'iw-pmatch__map' }, h('i', { html: GLYPHS.map }), info.map || 'Practice'))),
+      h('div', { class: 'iw-seclabel' }, h('i', { html: WEAPON_ICONS.shooter }), 'YOUR LOADOUT'),
+      h('div', { class: 'iw-wd__kits' },
+        kit('WEAPON', weaponIcon(W.kind || info.weapon || 'shooter'), W.name, W.blurb),
+        kit('SUB', SUB_ICONS[S.id] || SUB_ICONS.bomb, S.name, S.blurb),
+        kit('SPECIAL', specialIcon(sp.id || W.special), sp.name, sp.blurb)),
+      h('p', { class: 'iw-ppractice__tip' }, h('b', null, 'L'), ' swaps your loadout any time · ', h('b', null, 'Reset stage'), ' wipes the ink and refills your special'),
+      ctlWrap);
+    colorVars(panel, 'self', toHex(hex || a));
+
+    const el = h('div', { class: 'iw-screen iw-pause' },
+      h('div', { class: 'iw-pause__dim' }),
+      h('div', { class: 'iw-pause__col' },
+        h('div', { class: 'iw-pause__title iw-in iw-in--down' }, h('span', { class: 'iw-pause__blob', html: splatSVG({ seed: 5, cls: 'iw-fa', r: 60, arms: 8, drops: 4 }) }), h('span', { class: 'iw-display' }, 'PRACTICE')),
+        h('nav', { class: 'iw-pause__menu' }, btns)),
+      panel,
+      this._prompts([['Enter', 'A', 'Select'], ['Esc', 'Start', 'Resume']]));
+    return {
+      el, wrap: true, initial: btns[0],
+      onBack: () => { if (performance.now() - this._shownAt > 200) this._resume(); },
+      onInputMode: (mode) => { const old = ctlWrap.querySelector('.iw-ctl'); if (old) old.replaceWith(this._controlsList(mode, true)); },
+    };
+  }
+
   // ================================================================ SCREEN: results
   _scr_results() {
     const d = this._results || this._demoResults();
@@ -2153,17 +2448,25 @@ export class Menus {
     const selfTeam = self ? self.team : 0;
     const winTeam = win ? selfTeam : 1 - selfTeam;
     const reduced = prefersReducedMotion();
+    // Zone Control: final countdowns + how it was decided (the coverage-margin tags are a Turf War thing)
+    const zd = d.mode === 'zones' && d.zones ? d.zones : null;
+    if (zd) {
+      const why = ZONE_REASON[zd.reason] || ZONE_REASON.time;
+      const icon = zd.reason === 'knockout' ? 'star' : zd.reason === 'time' ? 'stopwatch' : zd.reason === 'comeback' ? 'wave' : 'shield';
+      awards.match = [{ id: 'zreason', icon, label: why[win ? 0 : 1].toUpperCase(), value: '' }];
+      if (zd.overtime) awards.match.push({ id: 'zot', icon: 'stopwatch', label: 'OVERTIME', value: zd.overtimeT > 0 ? `+${fmtTime(zd.overtimeT)}` : '' });
+    }
 
     // ---- title block: VICTORY/DEFEAT, stage, match tags, your medals
     const titleEl = h('div', { class: 'iw-res__title iw-display' }, win ? 'VICTORY!' : 'DEFEAT');
-    const tags = awards.match.map((t) => h('span', { class: `iw-res__tag iw-res__tag--${t.id}` }, h('i', { html: awardIcon(t.icon) }), t.label, h('small', null, t.value)));
+    const tags = awards.match.map((t) => h('span', { class: `iw-res__tag iw-res__tag--${t.id}` }, h('i', { html: awardIcon(t.icon) }), t.label, t.value ? h('small', null, t.value) : null));
     const myAwards = (self ? self._aw : []).slice(0, 4);
     const medals = myAwards.map((aw, i) => { const m = h('div', { class: 'iw-medalwrap', html: medalMarkup(aw, i) }).firstElementChild; return m; });
     const medalRow = medals.length ? h('div', { class: 'iw-res__medals' + (medals.length > 3 ? ' is-4' : '') }, h('div', { class: 'iw-res__medalcap' }, 'YOUR MEDALS'), h('div', { class: 'iw-res__medallist' }, medals)) : null;
     const head = h('div', { class: 'iw-res__head iw-in iw-in--pop' + (win ? ' is-win' : ' is-lose') },
       h('div', { class: 'iw-res__splat', html: splatSVG({ seed: win ? 9 : 14, cls: 'iw-fta', r: 60, arms: 10, drops: 4 }) }),
       titleEl,
-      h('div', { class: 'iw-res__metarow' }, h('div', { class: 'iw-res__meta' }, h('i', { html: GLYPHS.map }), `${d.mapName || 'Turf War'} · Turf War`), tags),
+      h('div', { class: 'iw-res__metarow' }, h('div', { class: 'iw-res__meta' }, h('i', { html: GLYPHS.map }), `${d.mapName || MODE_INFO[zd ? 'zones' : 'turf'].name} · ${MODE_INFO[zd ? 'zones' : 'turf'].name}`), tags),
       medalRow);
 
     // ---- coverage bar (JS-driven growth so the numbers + sound land together)
@@ -2174,11 +2477,32 @@ export class Menus {
       h('div', { class: 'iw-cover__a' }, h('i', { class: 'iw-cover__shine' })),
       h('div', { class: 'iw-cover__b' }, h('i', { class: 'iw-cover__shine' })),
       h('i', { class: 'iw-cover__mid' }));
-    const cover = h('div', { class: 'iw-res__cover iw-in' + (pa >= pb ? ' is-a' : ' is-b') },
+    let cover = h('div', { class: 'iw-res__cover iw-in' + (pa >= pb ? ' is-a' : ' is-b') },
       h('div', { class: 'iw-cover__names' },
         h('span', { class: 'ta' + (pa >= pb ? ' is-win' : '') }, pa >= pb ? crownA : null, names[0] || 'Alpha', numA),
         h('span', { class: 'tb' + (pb > pa ? ' is-win' : '') }, numB, names[1] || 'Bravo', pb > pa ? crownB : null)),
       coverBar);
+    // Zone Control: a race to the middle — each bar is how far that team counted down from 100 (hatched = the penalty
+    // it still had to count off); the numbers count down from 100 to the final count, then the penalty stamps on
+    let zc = null;
+    if (zd) {
+      const ZC = ZONES.count || 100, W = zd.winner === 1 ? 1 : 0;
+      const tot = zd.totals, cnt = zd.counts, pen = zd.penalty;
+      const done = (t) => clamp((ZC - tot[t]) / ZC) * 0.5, penW = (t) => clamp(Math.min(pen[t], ZC - (ZC - tot[t])) / ZC) * 0.5;
+      const pens = [0, 1].map((t) => h('em', { class: 'iw-zres__pen' + (pen[t] > 0 ? '' : ' is-none') }, `+${pen[t]}`));
+      numA.textContent = String(ZC); numB.textContent = String(ZC);
+      zc = { ZC, cnt, pens };
+      coverBar.classList.add('iw-cover--zones');
+      coverBar.style.setProperty('--pa', done(0).toFixed(4)); coverBar.style.setProperty('--pb', done(1).toFixed(4));
+      coverBar.style.setProperty('--qa', penW(0).toFixed(4)); coverBar.style.setProperty('--qb', penW(1).toFixed(4));
+      coverBar.append(h('i', { class: 'iw-zbar__pen is-a' }), h('i', { class: 'iw-zbar__pen is-b' }));
+      cover = h('div', { class: 'iw-res__cover iw-res__cover--zones iw-in' + (W === 0 ? ' is-a' : ' is-b') },
+        h('div', { class: 'iw-cover__names' },
+          h('span', { class: 'ta' + (W === 0 ? ' is-win' : '') }, W === 0 ? crownA : null, names[0] || 'Alpha', numA, pens[0]),
+          h('span', { class: 'iw-zres__mid' }, h('i', { html: ZONE_GLYPH }), 'COUNT TO ZERO'),
+          h('span', { class: 'tb' + (W === 1 ? ' is-win' : '') }, pens[1], numB, names[1] || 'Bravo', W === 1 ? crownB : null)),
+        coverBar);
+    }
 
     // ---- team tables with count-ups + award badges
     const rowFx = [];
@@ -2219,7 +2543,10 @@ export class Menus {
     const lvUp = h('span', { class: 'iw-xp__lvup' }, 'LEVEL UP!');
     // honest XP breakdown (only when the parts add up to the reported gain)
     const bd = [];
-    if (self) {
+    if (self && Array.isArray(xp.parts)) {
+      // the engine's own breakdown (Zone Control), shown when it adds up to the reported gain
+      if (xp.gained > 0 && Math.abs(xp.parts.reduce((a, p) => a + (+p[1] || 0), 0) - xp.gained) <= 2) for (const [label, v] of xp.parts) if (v > 0) bd.push([label, v]);
+    } else if (self) {
       const base = win ? PROGRESSION.xpWin : PROGRESSION.xpLose;
       const tx = Math.round((self.turf || 0) * PROGRESSION.xpPerTurfPoint), sx = Math.round((self.splats || 0) * PROGRESSION.xpPerSplat);
       if (xp.gained > 0 && Math.abs(base + tx + sx - xp.gained) <= 2) {
@@ -2270,6 +2597,12 @@ export class Menus {
 
     const setCover = (k) => {
       coverBar.style.setProperty('--ga', k.toFixed(4));
+      if (zc) {
+        const va = Math.round(zc.ZC - (zc.ZC - zc.cnt[0]) * k), vb = Math.round(zc.ZC - (zc.ZC - zc.cnt[1]) * k);
+        if (va !== lastA) { lastA = va; numA.textContent = String(va); }
+        if (vb !== lastB) { lastB = vb; numB.textContent = String(vb); }
+        return;
+      }
       const va = Math.round(pa * k * 10), vb = Math.round(pb * k * 10);
       if (va !== lastA) { lastA = va; numA.textContent = (va / 10).toFixed(1) + '%'; }
       if (vb !== lastB) { lastB = vb; numB.textContent = (vb / 10).toFixed(1) + '%'; }

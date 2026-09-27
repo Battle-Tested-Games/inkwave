@@ -1,4 +1,6 @@
 // Renderer + post stack (MSAA HDR target → optional GTAO → bloom → grade/vignette → output).
+// Apple GPUs (ANGLE's Metal backend): multisampled half-float targets cost ~30 ms/frame at 1920×1200 on an M1 Pro,
+// so there the HDR target is single-sampled and edges are smoothed by SMAA after output, and GTAO runs at half res.
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -6,6 +8,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { QUALITY } from '../config.js';
 import { G } from './ctx.js';
 
@@ -66,6 +69,12 @@ const GradeShader = {
 				shadow = s9 * ( 1.0 / 9.0 );`);
 })();
 
+function isAppleGPU(gl) {
+  const ext = gl.getExtension('WEBGL_debug_renderer_info');
+  const name = String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+  return /Apple/i.test(name) && !/Intel|AMD|Radeon|NVIDIA/i.test(name);
+}
+
 export class Renderer {
   constructor(container, settings) {
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', stencil: false }));
@@ -77,6 +86,7 @@ export class Renderer {
     r.shadowMap.type = THREE.PCFShadowMap;
     r.setClearColor(0x9fd8f0, 1);
     container.appendChild(r.domElement);
+    this.appleGPU = isAppleGPU(r.getContext());
     r.domElement.id = 'game-canvas';
     this.container = container;
     this.scene = null; this.camera = null;
@@ -98,7 +108,9 @@ export class Renderer {
     r.setPixelRatio(pr);
     const w = window.innerWidth, h = window.innerHeight;
     r.setSize(w, h);
-    const rt = new THREE.WebGLRenderTarget(w * pr, h * pr, { type: THREE.HalfFloatType, samples: q.msaa || 0 });
+    // effective MSAA sample count (also read by the showcase for its private target)
+    this.samples = this.appleGPU ? 0 : q.msaa || 0;
+    const rt = new THREE.WebGLRenderTarget(w * pr, h * pr, { type: THREE.HalfFloatType, samples: this.samples });
     const comp = (this.composer = new EffectComposer(r, rt));
     comp.setPixelRatio(pr);
     comp.setSize(w, h);
@@ -111,6 +123,7 @@ export class Renderer {
       ao.blendIntensity = 1.0;
       ao.updateGtaoMaterial({ radius: 0.75, distanceExponent: 1.6, thickness: 1.0, scale: 1.15, samples: 12, distanceFallOff: 1.0 });
       ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 16 });
+      if (this.appleGPU) { const set = ao.setSize.bind(ao); ao.setSize = (sw, sh) => set(Math.ceil(sw / 2), Math.ceil(sh / 2)); }
       comp.addPass(ao);
     }
     this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.28, 0.45, 2.4);
@@ -122,6 +135,8 @@ export class Renderer {
     // optional screen-FX pass (src/fx/screenfx.js) — runs in HDR linear space before tone mapping/output
     if (this.extraPass) comp.addPass(this.extraPass);
     comp.addPass(new OutputPass());
+    // SMAA stands in for MSAA where MSAA was skipped; it runs on the tone-mapped sRGB image
+    if (q.msaa && !this.samples) comp.addPass(new SMAAPass());
     r.shadowMap.enabled = this.settings.shadows !== false;
     this._w = w; this._h = h;
     this.grade.uniforms.uAspect.value = w / h;
@@ -146,9 +161,15 @@ export class Renderer {
     if (this.bloom) this.bloom.enabled = !!(this.q.bloom && settings.bloom);
   }
 
-  // Dynamic resolution (never on ultra): scale the render density between 0.75 and 1 of the quality preset.
+  // Lowest dynamic scale: never below 0.75 of CSS-pixel density, so Retina screens (preset density > 1) can give more back.
+  dynFloor() {
+    const base = Math.min(window.devicePixelRatio || 1, this.q.pixelRatio);
+    return Math.max(0.5, Math.min(0.75, 0.75 / base));
+  }
+
+  // Dynamic resolution (never on ultra): scale the render density between dynFloor() and 1 of the quality preset.
   setDynamicScale(s) {
-    s = Math.max(0.75, Math.min(1, s));
+    s = Math.max(this.dynFloor(), Math.min(1, s));
     if (Math.abs(s - this.dynScale) < 0.01) return;
     this.dynScale = s;
     const pr = Math.min(window.devicePixelRatio || 1, this.q.pixelRatio) * s;
