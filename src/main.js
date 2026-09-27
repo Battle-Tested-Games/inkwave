@@ -721,8 +721,8 @@ class Game {
 
   // a random stage (a different one from the current, when there's a choice)
   startPractice(o = {}) {
-    const pool = MAPS.filter((m) => m.id !== this.mapDef?.id);
-    const map = (o.mapId && MAPS.find((m) => m.id === o.mapId)) || pool[(Math.random() * pool.length) | 0] || MAPS[0];
+    const pool = OFFLINE_MAPS.filter((m) => m.id !== this.mapDef?.id);   // (never an online-only stage)
+    const map = (o.mapId && OFFLINE_MAPS.find((m) => m.id === o.mapId)) || pool[(Math.random() * pool.length) | 0] || OFFLINE_MAPS[0];
     return this.startMatch({ mapId: map.id, practice: true });
   }
 
