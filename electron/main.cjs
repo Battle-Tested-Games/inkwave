@@ -54,7 +54,7 @@ function createWindow() {
     backgroundColor: '#0d1020',
     fullscreen: !!state.fullscreen,
     fullscreenable: true,
-    webPreferences: { contextIsolation: true, sandbox: true, preload: path.join(__dirname, 'preload.js') },
+    webPreferences: { contextIsolation: true, sandbox: true, preload: path.join(__dirname, 'preload.cjs') },
   });
   win.loadURL('app://inkwave/index.html');
   // Keep any outbound links in the user's browser instead of inside the game window.

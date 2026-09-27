@@ -1173,9 +1173,8 @@ class Builder {
   tube(mat, c, pts, r, o = {}) { this.add(mat, tubeGeo(pts, r, o.radial ?? 8, !!o.closed, o.up || null), c, o.x || 0, o.y || 0, o.z || 0, o); }
   decal(name, w, h, x, y, z, o = {}) { this.add(o.glow ? 'glow' : 'paint', G.plane(w, h), o.tint ?? 'white', x, y, z, { ...o, uv: regUV(name), ao: false }); }
   blob(w, d, x = 0, z = 0) { if (this.aoBase == null) return; this.add('blob', G.plane(1, 1), 'white', x, 0.012, z, { rx: -HP, sx: w, sy: d, uvs: [1, 1] }); this.tris -= 2; }
-  // collision box (local, metres). o.roof: an off-limits top — never inkable, nobody can stand on it (slides off).
-  // o.perch: a top you can stand on but never ink. o.rail: a railing (kids blocked, shots / ink / squids pass).
-  // o.rail: a railing / fence / grille — blocks kids, but shots, ink and squids pass through (and nobody stands on it)
+  // collision box (local, metres). Optional flags (stage packs): o.roof = an off-limits top (never inkable, you slide
+  // off), o.perch = a top you can stand on but never ink, o.rail = a railing (kids blocked; shots / ink / squids pass)
   col(x0, y0, z0, x1, y1, z1, o) { const f = (o && o.roof ? 1 : 0) | (o && o.rail ? 2 : 0) | (o && o.perch ? 4 : 0); this.cols.push(f ? [x0, y0, z0, x1, y1, z1, f] : [x0, y0, z0, x1, y1, z1]); }
   spin(kind, x, y, z, o = {}) { this.k._spin.push({ kind, base: this._m(x, y, z, o), speed: o.speed ?? 8, phase: this.r(0, TAU) }); this.tris += this.k._tplTris(kind); }
   blink(c, x, y, z, o = {}) { this.k._blink.push({ m: this._m(x, y, z, { s: o.size ?? 0.045 }), color: col(c).clone(), rate: o.rate ?? 1, phase: o.phase ?? this.r(0, TAU), lo: o.lo ?? 0.25, hi: o.hi ?? 5 }); this.tris += 84; }
@@ -3083,11 +3082,12 @@ const PACK_HELPERS = {
 };
 registerMarinaVessels(D, PACK_HELPERS);
 registerMarinaDock(D, PACK_HELPERS);
-// the other stages' packs (src/world/stages/<id>/props.js), each on its own so one broken pack only loses its own types
-for (const [id, s] of Object.entries(STAGES)) {
-  if (!s.register) continue;
+// stage-owned packs (src/world/stages/<id>/props.js, types prefixed '<id>_'), each on its own: a broken pack only loses
+// its own types (and never overrides a type that already exists)
+for (const [id, st] of Object.entries(STAGES)) {
+  if (!st.register) continue;
   const before = new Set(Object.keys(D));
-  try { s.register(D, PACK_HELPERS); } catch (e) { console.error(`[inkwave] stage prop pack ${id} failed`, e); for (const k of Object.keys(D)) if (!before.has(k)) delete D[k]; }
+  try { st.register(D, PACK_HELPERS); } catch (e) { console.error(`[inkwave] stage prop pack ${id} failed`, e); for (const k of Object.keys(D)) if (!before.has(k)) delete D[k]; }
 }
 
 export class PropKit {
@@ -3160,10 +3160,13 @@ export class PropKit {
     def.build(B, o);
     this.lastTris = B.tris;
     this.count++;
-    return { colliders: this._xfCols(B.cols, pos, rotY, scale) };
+    return { colliders: this._xfCols(B.cols, pos, rotY, scale, !!o.oboxCols) };
   }
 
-  _xfCols(cols, pos, rotY, s) {
+  // Local collider boxes → level boxes. A quarter-turned prop gives exact axis-aligned boxes; any other angle gives the
+  // rotated box's world AABB — or, with `obox` (the placement asked for it: a stage laid out at an angle), the box
+  // turned with the prop. Stage-pack flags (roof / rail / perch) ride along.
+  _xfCols(cols, pos, rotY, s, obox = false) {
     const q = Math.round(rotY / HP), snapped = Math.abs(rotY - q * HP) < 1e-3;
     const qq = ((q % 4) + 4) % 4;
     const c = snapped ? [1, 0, -1, 0][qq] : Math.cos(rotY), sn = snapped ? [0, 1, 0, -1][qq] : Math.sin(rotY);

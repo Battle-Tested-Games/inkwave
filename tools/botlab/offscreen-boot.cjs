@@ -1,4 +1,4 @@
-// Botlab boot (required by every harness): the real app (electron/main.js) with an isolated profile, every game window
+// Botlab boot (required by every harness): the real app (electron/main.cjs) with an isolated profile, every game window
 // rendered off-screen (never shown), audio muted, and a few switches that keep headless runs fast on macOS.
 const Module = require('module');
 const electron = require('electron');
@@ -51,5 +51,5 @@ const protoProxy = new Proxy(electron.protocol, { get: (t, k) => (k === 'handle'
 const patched = new Proxy(electron, { get: (t, k) => (k === 'BrowserWindow' ? OffscreenBW : k === 'protocol' ? protoProxy : t[k]) });
 const load = Module._load;
 Module._load = function (req) { return req === 'electron' ? patched : load.apply(this, arguments); };
-require(path.join(ROOT, 'electron', 'main.js'));
+require(path.join(ROOT, 'electron', 'main.cjs'));
 Module._load = load;

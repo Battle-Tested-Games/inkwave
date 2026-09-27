@@ -1162,7 +1162,8 @@ const MATERIALS = [
   },
 ];
 
-// stage surface materials (src/world/stages/<id>/surfaces.js): one uber-program group per stage
+// stage-owned surface materials (src/world/stages/<id>/surfaces.js, layers '<id>:<name>'): appended after every original
+// layer (their indices never move), compiled into the group their registry names (stages/surfaces.js)
 for (const s of STAGE_SURFACES) MATERIALS.push({ ...s.mat, name: s.name, group: s.group });
 
 // ---------------------------------------------------------------------------------------------------------------

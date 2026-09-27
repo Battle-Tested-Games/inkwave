@@ -191,11 +191,12 @@ export class AudioEngine {
 
   _dist(p) { const dx = p.x - this.L.x, dy = p.y - this.L.y, dz = p.z - this.L.z; return Math.sqrt(dx * dx + dy * dy + dz * dz); }
 
-  _panner(pos) {
+  // ref: the def's reference distance (m) — giant sources (the boss) stay loud across the arena
+  _panner(pos, ref = 3) {
     const ctx = this.ctx;
     const p = ctx.createPanner();
     p.panningModel = this.hrtf ? 'HRTF' : 'equalpower';
-    p.distanceModel = 'inverse'; p.refDistance = 3; p.maxDistance = 60; p.rolloffFactor = 1.2;
+    p.distanceModel = 'inverse'; p.refDistance = ref; p.maxDistance = Math.max(60, ref * 20); p.rolloffFactor = 1.2;
     p.coneInnerAngle = 360; p.coneOuterAngle = 360;
     if (p.positionX) { p.positionX.value = pos.x; p.positionY.value = pos.y; p.positionZ.value = pos.z; }
     else p.setPosition(pos.x, pos.y, pos.z);
@@ -207,7 +208,7 @@ export class AudioEngine {
     const p = voice.panner;
     if (p.positionX) { p.positionX.setTargetAtTime(pos.x, t, 0.02); p.positionY.setTargetAtTime(pos.y, t, 0.02); p.positionZ.setTargetAtTime(pos.z, t, 0.02); }
     else p.setPosition(pos.x, pos.y, pos.z);
-    const d = this._dist(pos);
+    const d = this._dist(pos) * (voice.dk || 1);
     voice.lp.frequency.setTargetAtTime(distCut(d), t, 0.05);
     if (voice.send) voice.send.gain.setTargetAtTime(voice.rev * this._sendScale(d), t, 0.05);
   }
@@ -224,9 +225,10 @@ export class AudioEngine {
     if (withFade) { voice.fade = ctx.createGain(); out.connect(voice.fade); head = voice.fade; v.nodes.push(voice.fade); }
     let scale = 1;
     if (validPos(pos)) {
-      const d = this._dist(pos);
+      voice.dk = 3 / (def.ref || 3);                  // big sources: distance air-absorption / reverb scale with their size
+      const d = this._dist(pos) * voice.dk;
       voice.lp = ctx.createBiquadFilter(); voice.lp.type = 'lowpass'; voice.lp.Q.value = 0.5; voice.lp.frequency.value = distCut(d);
-      voice.panner = this._panner(pos);
+      voice.panner = this._panner(pos, def.ref || 3);
       head.connect(voice.lp); voice.lp.connect(voice.panner); voice.panner.connect(this.sfxIn);
       v.nodes.push(voice.lp, voice.panner);
       voice.rev += Math.min(0.25, Math.max(0, (d - 6) / 60));
@@ -2212,6 +2214,267 @@ def('harbor_ambience', {
   },
 });
 
+/* ---- Boss mode: HULLBREAKER (played by src/audio/bossAudio.js from the boss:* events; `ref` = reference distance,
+ * so a 6 m crab stays loud across the arena) ---- */
+def('boss_roar', {
+  gain: 0.37, max: 2, jitter: 0.04, reverb: 0.34, ref: 16,
+  build(v, p) {
+    const T = v.t, D = 1.9;
+    // throat: detuned saws + a square through a driven formant pair; pitch swells then sags, growl flutter on top
+    const env = v.gain(0, v.out);
+    pts(env.gain, T, [[0, 0], [0.12, 0.75], [0.5, 1], [1.3, 0.85], [D, 0]]);
+    const flutter = v.gain(1, env);
+    v.lfo(24, 0.4, flutter.gain, T, T + D);
+    const drive = v.shaper(3, flutter);
+    const f1 = v.filter('bandpass', 380, 2.4, drive), f2 = v.filter('bandpass', 1050, 3.2, v.gain(0.7, drive));
+    sweep(f1.frequency, T, 300, 720, 0.5); f1.frequency.exponentialRampToValueAtTime(240, T + D);
+    sweep(f2.frequency, T, 900, 1500, 0.5); f2.frequency.exponentialRampToValueAtTime(700, T + D);
+    const mix = v.gain(1); mix.connect(f1); mix.connect(f2);
+    const lp = v.filter('lowpass', 2600, 0.8, mix);
+    for (const [det, type, lv] of [[-14, 'sawtooth', 0.5], [9, 'sawtooth', 0.5], [0, 'square', 0.3]]) {
+      const o = v.osc(type, 52 * p, T, T + D + 0.05, v.gain(lv, lp));
+      o.detune.value = det;
+      o.frequency.setValueAtTime(50 * p, T); o.frequency.linearRampToValueAtTime(80 * p, T + 0.45);
+      o.frequency.linearRampToValueAtTime(58 * p, T + 1.3); o.frequency.linearRampToValueAtTime(38 * p, T + D);
+    }
+    v.nz({ kind: 'pink', f: 950, f1: 420, sw: D, q: 0.9, a: 0.1, h: 1.1, d: 0.6, peak: 0.5 });          // breath
+    v.tone({ f: 46 * p, f1: 30 * p, sw: D, a: 0.1, h: 1.0, d: 0.7, peak: 0.75 });                       // chest
+    bloops(v, 0.25, 6, 1.2, [170, 420], 0.22, p);                                                        // wet gurgle
+  },
+});
+def('boss_step', {
+  gain: 0.62, max: 6, jitter: 0.08, reverb: 0.12, ref: 10, minGap: 0.05,
+  build(v, p) {
+    v.tone({ f: 72 * p, f1: 32 * p, sw: 0.18, a: 0.002, d: 0.32, peak: 1 });
+    v.nz({ kind: 'brown', ft: 'lowpass', f: 700, f1: 110, sw: 0.25, a: 0.002, d: 0.3, peak: 0.8 });
+    v.nz({ t: 0.004, f: 380 * p, q: 6, a: 0.001, d: 0.12, peak: 0.32 });                              // the container clanks
+    v.tone({ t: 0.01, type: 'triangle', f: 233 * p, a: 0.001, d: 0.2, peak: 0.12 });
+    v.tone({ t: 0.01, type: 'triangle', f: 347 * p, a: 0.001, d: 0.15, peak: 0.08 });
+    plips(v, 0.02, 2, 0.06, [260, 520], 0.1, p);
+  },
+});
+def('boss_slam', {
+  gain: 0.4, max: 2, jitter: 0.04, reverb: 0.3, ref: 16,
+  build(v, p) {
+    v.tone({ f: 82 * p, f1: 25 * p, sw: 0.9, a: 0.002, d: 1.25, peak: 1 });
+    v.nz({ ft: 'highpass', f: 1600, a: 0.0003, d: 0.06, peak: 1 });
+    const sh = v.shaper(3, v.gain(0.7, v.out));
+    v.nz({ kind: 'pink', ft: 'lowpass', f: 5200, f1: 120, sw: 0.9, q: 0.8, a: 0.002, d: 1.1, peak: 1, to: sh });
+    for (const [f, pk, d] of [[183, 0.26, 0.95], [497, 0.18, 0.6], [1130, 0.1, 0.42], [1720, 0.06, 0.3]]) v.tone({ type: 'triangle', f: f * p, a: 0.001, d, peak: pk });   // claw armour rings
+    bigSplat(v, 0.03, p * 0.8, 0.9);
+    v.nz({ t: 0.12, f: 700, f1: 190, sw: 1.0, q: 1.4, a: 0.02, d: 1.0, peak: 0.5 });                   // the shockwave ring rolling out
+  },
+});
+def('boss_tele', {
+  gain: 0.34, max: 2, jitter: 0.02, reverb: 0.25, ref: 16, minGap: 0.25,
+  build(v, p) {
+    // ominous low horn "bwaamp" + a metal creak: something big is winding up
+    const T = v.t;
+    for (const [m, pan] of [[38, -0.2], [45, 0.2], [50, 0]]) brass(v, T, mtof(m) * p, 0.34, 0.4, { to: v.pan(pan, v.out), bright: 1400, a: 0.03, r: 0.3 });
+    const g = v.gain(0, v.out); pts(g.gain, T, [[0, 0], [0.05, 0.25], [0.45, 0.18], [0.6, 0]]);
+    const bp = v.filter('bandpass', 700 * p, 9, g); sweep(bp.frequency, T, 700 * p, 1100 * p, 0.55);
+    v.noise('pink', T, T + 0.62, bp);
+  },
+});
+def('boss_whistle', {
+  gain: 0.21, max: 6, jitter: 0.06, reverb: 0.1, ref: 8,
+  build(v, p) {
+    const T = v.t, D = 0.95;
+    const g = v.gain(0, v.out); pts(g.gain, T, [[0, 0], [0.08, 0.5], [D - 0.1, 0.75], [D, 0]]);
+    const o = v.osc('sine', 2100 * p, T, T + D + 0.02, g);
+    o.frequency.exponentialRampToValueAtTime(640 * p, T + D);
+    v.lfo(9, 38, o.frequency, T, T + D);
+    v.nz({ f: 2000 * p, f1: 700 * p, sw: D, q: 4, a: 0.1, h: D - 0.2, d: 0.1, peak: 0.12 });
+  },
+});
+def('boss_barrel', {
+  gain: 0.6, max: 6, jitter: 0.07, reverb: 0.18, ref: 9, minGap: 0.04,
+  build(v, p) {
+    v.nz({ ft: 'highpass', f: 1200, a: 0.0005, d: 0.05, peak: 0.9 });
+    for (let i = 0; i < 3; i++) v.nz({ t: v.r(0, 0.04), f: v.r(500, 1400) * p, q: 8, a: 0.001, d: v.r(0.04, 0.09), peak: 0.4 });   // staves crack
+    v.tone({ f: 140 * p, f1: 58 * p, sw: 0.2, a: 0.002, d: 0.3, peak: 0.7 });
+    bigSplat(v, 0.01, p, 1.1);
+  },
+});
+def('boss_cannon_charge', {
+  gain: 0.23, max: 2, jitter: 0.02, reverb: 0.15, ref: 14,
+  build(v, p) {
+    const T = v.t, D = 1.25;
+    const g = v.gain(0, v.out); pts(g.gain, T, [[0, 0], [0.2, 0.35], [D - 0.08, 1], [D, 0]]);
+    const trem = v.gain(1, g); v.lfo(14, 0.3, trem.gain, T, T + D);
+    const lp = v.filter('lowpass', 600, 5, trem); sweep(lp.frequency, T, 500, 5200, D);
+    const o = v.osc('sawtooth', 110 * p, T, T + D + 0.02, lp); o.frequency.exponentialRampToValueAtTime(640 * p, T + D);
+    const o2 = v.osc('sine', 220 * p, T, T + D + 0.02, v.gain(0.5, trem)); o2.frequency.exponentialRampToValueAtTime(1280 * p, T + D);
+    const bub = v.gain(0, v.out); pts(bub.gain, T, [[0, 0], [0.3, 0.3], [D, 0.65], [D + 0.05, 0]]);
+    v.buffer(texture(v.ctx, 'bubbles_bright'), T, T + D + 0.05, bub, 1.2 * p);
+  },
+});
+def('boss_cannon_sweep', {
+  gain: 0.27, max: 2, jitter: 0, reverb: 0.12, ref: 14, oneShot: 2.4,
+  loop(v, p) {
+    const T = v.t;
+    const hs = v.gain(0.5, v.out);
+    v.noise('white', T, null, v.filter('bandpass', 1800 * p, 0.8, hs));
+    v.lfo(6, 0.12, hs.gain, T, null);
+    v.noise('brown', T, null, v.filter('lowpass', 260, 1, v.gain(0.6, v.out)));
+    const tex = v.buffer(texture(v.ctx, 'squelch'), T, null, v.gain(0.7, v.filter('lowpass', 1400, 0.8, v.out)), p);
+    const o = v.osc('sawtooth', 55 * p, T, null, v.gain(0.12, v.filter('lowpass', 300, 1, v.out)));
+    return { pitch(q, now) { tex.playbackRate.setTargetAtTime(q, now, 0.05); o.frequency.setTargetAtTime(55 * q, now, 0.05); } };
+  },
+});
+def('boss_gallop', {
+  gain: 0.42, max: 2, jitter: 0, reverb: 0.1, ref: 12, oneShot: 1.8,
+  loop(v, p) {
+    // eight legs pounding: a stroke-shaped AM (~9 thuds/s) on a sub thump, dirt and a container rattle, plus scrape
+    const T = v.t, am = v.gain(0, v.out);
+    const st = v.osc(strokeWave(v.ctx, 9), 8.5 * p, T, null);
+    const dep = v.gain(1); st.connect(dep); dep.connect(am.gain);
+    v.osc('sine', 58 * p, T, null, v.gain(0.9, am));
+    v.noise('brown', T, null, v.filter('lowpass', 500, 1, v.gain(1.2, am)));
+    v.noise('white', T, null, v.filter('bandpass', 420 * p, 5, v.gain(0.35, am)));
+    v.noise('pink', T, null, v.filter('bandpass', 900, 0.7, v.gain(0.12, v.out)));
+    return { pitch(q, now) { st.frequency.setTargetAtTime(8.5 * q, now, 0.05); } };
+  },
+});
+def('boss_crash', {
+  gain: 0.49, max: 2, jitter: 0.04, reverb: 0.32, ref: 16,
+  build(v, p) {
+    v.tone({ f: 96 * p, f1: 30 * p, sw: 0.7, a: 0.002, d: 1.0, peak: 1 });
+    v.nz({ ft: 'highpass', f: 1500, a: 0.0003, d: 0.08, peak: 1 });
+    const sh = v.shaper(4, v.gain(0.6, v.out));
+    v.nz({ kind: 'pink', ft: 'lowpass', f: 7000, f1: 300, sw: 0.6, q: 0.8, a: 0.002, d: 0.85, peak: 1, to: sh });
+    for (const [f, pk, d] of [[151, 0.3, 1.3], [412, 0.22, 0.9], [867, 0.16, 0.7], [1391, 0.1, 0.5], [2210, 0.06, 0.35]]) v.tone({ type: 'triangle', f: f * p, f1: f * p * 0.96, sw: d, a: 0.001, d, peak: pk });
+    for (let i = 0; i < 9; i++) v.nz({ t: 0.08 + v.r(0, 0.6), f: v.r(900, 3500), q: 6, a: 0.001, d: v.r(0.02, 0.06), peak: v.r(0.1, 0.3) });   // debris
+  },
+});
+def('boss_dizzy', {
+  gain: 0.1, max: 1, jitter: 0, reverb: 0.2, ref: 10, oneShot: 2.5,
+  loop(v, p) {
+    // cartoon birdies circling its eye stalks: chirping sines on a sawtooth sweep, gated by a slow square
+    const T = v.t;
+    const gate = v.gain(0, v.out), am = v.gain(0.5); am.connect(gate.gain);
+    v.osc('square', 3.2, T, null, am);
+    gate.gain.value = 0.5;
+    const o = v.osc('sine', 1700 * p, T, null, gate);
+    v.lfo(7, 480 * p, o.frequency, T, null, 'sawtooth'); v.lfo(0.8, 260 * p, o.frequency, T, null);
+    const o2 = v.osc('triangle', 2500 * p, T, null, v.gain(0.07, v.out));
+    v.lfo(5.3, 650 * p, o2.frequency, T, null, 'sawtooth');
+    return { pitch() {} };
+  },
+});
+def('boss_frenzy', {
+  gain: 0.26, max: 1, jitter: 0, reverb: 0.12, ref: 14, oneShot: 3,
+  loop(v, p) {
+    const T = v.t;
+    const bp = v.filter('bandpass', 900, 1.2, v.gain(0.8, v.out));
+    v.noise('pink', T, null, bp);
+    const l = v.lfo(3.2 * p, 650, bp.frequency, T, null);                                            // whoosh per turn
+    const hs = v.gain(0.35, v.out);
+    v.noise('white', T, null, v.filter('highpass', 2500, 0.7, hs));
+    v.lfo(3.2 * p, 0.2, hs.gain, T, null);
+    v.buffer(texture(v.ctx, 'squelch'), T, null, v.gain(0.5, v.out), 1.3 * p);
+    v.osc('sawtooth', 70 * p, T, null, v.gain(0.1, v.filter('lowpass', 240, 1, v.out)));
+    return { pitch(q, now) { l.osc.frequency.setTargetAtTime(3.2 * q, now, 0.1); } };
+  },
+});
+def('crablet_chitter', {
+  gain: 1.0, max: 4, jitter: 0.1, reverb: 0.05, ref: 5, minGap: 0.08,
+  build(v, p) {
+    for (let i = 0; i < 9; i++) v.nz({ t: i * 0.035 + v.r(0, 0.012), ft: 'highpass', f: v.r(2500, 4500), a: 0.0005, d: v.r(0.008, 0.02), peak: v.r(0.3, 0.6) });
+    v.tone({ t: 0.05, type: 'square', f: 1300 * p, f1: 1900 * p, sw: 0.06, a: 0.002, d: 0.07, peak: 0.1 });
+    v.tone({ t: 0.18, type: 'square', f: 1500 * p, f1: 1100 * p, sw: 0.06, a: 0.002, d: 0.06, peak: 0.08 });
+  },
+});
+def('crablet_pop', {
+  gain: 0.45, max: 5, jitter: 0.08, reverb: 0.08, ref: 5, minGap: 0.03,
+  build(v, p) {
+    v.tone({ f: 900 * p, f1: 170 * p, sw: 0.07, a: 0.001, d: 0.09, peak: 0.8 });
+    v.nz({ ft: 'highpass', f: 2500, a: 0.0005, d: 0.03, peak: 0.6 });
+    bloops(v, 0.01, 3, 0.08, [500, 900], 0.35, p);
+    plips(v, 0.03, 3, 0.1, [900, 1500], 0.15, p);
+  },
+});
+def('boss_hit', {
+  gain: 0.56, max: 4, jitter: 0.06, reverb: 0.04, minGap: 0.05,
+  build(v, p) {
+    v.tone({ f: 190 * p, f1: 88 * p, sw: 0.06, a: 0.001, d: 0.09, peak: 0.8 });                        // armoured thunk
+    v.tone({ type: 'triangle', f: 640 * p, a: 0.001, d: 0.06, peak: 0.18 });
+    v.nz({ f: 1800 * p, q: 2, a: 0.0005, d: 0.04, peak: 0.4 });
+  },
+});
+def('boss_crit', {
+  gain: 0.46, max: 3, jitter: 0.03, reverb: 0.1, minGap: 0.06,
+  build(v, p) {
+    v.nz({ ft: 'highpass', f: 2200, a: 0.0003, d: 0.05, peak: 0.8 });
+    v.tone({ f: 260 * p, f1: 105 * p, sw: 0.08, a: 0.001, d: 0.12, peak: 0.8 });
+    bell(v, v.t, mtof(91) * p, 0.34, { d: 0.35 });
+    bell(v, v.t + 0.028, mtof(98) * p, 0.2, { d: 0.3 });
+    v.tone({ type: 'square', f: 1760 * p, f1: 2640 * p, sw: 0.05, a: 0.001, d: 0.06, peak: 0.07 });
+    bloops(v, 0.01, 2, 0.05, [500, 800], 0.22, p);
+  },
+});
+def('boss_phase', {
+  gain: 0.42, max: 1, jitter: 0, reverb: 0.34,
+  build(v, p) {
+    const T = v.t;
+    crash(v, T, 0.7, { d: 2 }); kick(v, T, 0.9);
+    tom(v, T, 55, 0.8); tom(v, T + 0.17, 49, 0.7); tom(v, T + 0.34, 43, 0.85);
+    // a diminished stab over a low D: the fight just got worse
+    for (const [m, pan] of [[38, 0], [50, -0.3], [53, 0.3], [56, -0.15], [62, 0.2]]) brass(v, T, mtof(m) * p, 0.95, 0.34, { to: v.pan(pan, v.out), bright: 3000, a: 0.02, r: 0.7 });
+    v.tone({ f: 44 * p, f1: 30 * p, sw: 1.2, a: 0.01, d: 1.3, peak: 0.6 });
+  },
+});
+def('boss_title', {
+  gain: 0.31, max: 1, jitter: 0, reverb: 0.32,
+  build(v, p) {
+    const T = v.t;
+    kick(v, T, 1); crash(v, T, 0.8, { d: 2.2 }); tom(v, T, 48, 0.9);
+    v.tone({ f: 55 * p, f1: 29 * p, sw: 1.2, a: 0.002, d: 1.4, peak: 0.8 });
+    for (const [m, pan] of [[38, 0], [50, -0.3], [53, 0.3], [57, -0.15], [62, 0.2], [65, 0]]) brass(v, T, mtof(m) * p, 0.62, 0.32, { to: v.pan(pan, v.out), bright: 3400, a: 0.015, r: 0.7 });
+    const t2 = T + 0.72;
+    tom(v, t2, 43, 0.85); kick(v, t2, 0.85);
+    for (const [m, pan] of [[34, 0], [46, -0.25], [50, 0.25], [53, -0.1], [58, 0.1]]) brass(v, t2, mtof(m) * p, 1.0, 0.3, { to: v.pan(pan, v.out), bright: 2800, a: 0.02, r: 1.0 });
+  },
+});
+def('boss_defeat', {
+  gain: 0.36, max: 1, jitter: 0, reverb: 0.36, ref: 20,
+  build(v, p) {
+    const T = v.t;
+    // a last groan, sagging down
+    const g = v.gain(0, v.out); pts(g.gain, T, [[0, 0], [0.1, 0.7], [1.0, 0.5], [1.6, 0]]);
+    const lp = v.filter('lowpass', 1500, 1.5, g); sweep(lp.frequency, T, 1500, 280, 1.6);
+    for (const d of [-12, 7]) { const o = v.osc('sawtooth', 92 * p, T, T + 1.65, lp); o.detune.value = d; o.frequency.exponentialRampToValueAtTime(30 * p, T + 1.6); }
+    // the container crumples
+    for (let i = 0; i < 6; i++) {
+      const t = 0.2 + i * 0.16 + v.r(0, 0.08);
+      v.tone({ t, type: 'triangle', f: v.r(180, 900) * p, a: 0.001, d: v.r(0.2, 0.5), peak: v.r(0.08, 0.2) });
+      v.nz({ t, f: v.r(700, 2400), q: 5, a: 0.001, d: 0.06, peak: 0.25 });
+    }
+    // it hits the deck
+    v.tone({ t: 1.1, f: 76 * p, f1: 24 * p, sw: 1.0, a: 0.002, d: 1.3, peak: 1 });
+    const sh = v.shaper(3, v.gain(0.6, v.out));
+    v.nz({ t: 1.1, kind: 'pink', ft: 'lowpass', f: 4500, f1: 120, sw: 1.0, q: 0.8, a: 0.002, d: 1.2, peak: 1, to: sh });
+    // ink geyser: a rushing column, bubbling, then big splats raining back down
+    v.nz({ t: 1.35, f: 300, f1: 2600, sw: 1.2, q: 0.9, a: 0.25, h: 0.6, d: 1.0, peak: 0.7 });
+    const bg = v.gain(0, v.out); pts(bg.gain, T + 1.35, [[0, 0], [0.3, 0.7], [1.6, 0.5], [2.3, 0]]);
+    v.buffer(texture(v.ctx, 'bubbles'), T + 1.35, T + 3.7, bg, 1.1);
+    for (let i = 0; i < 5; i++) bigSplat(v, 2.0 + i * 0.28 + v.r(0, 0.1), p * v.r(0.8, 1.2), 0.45);
+  },
+});
+def('boss_sunk', {
+  gain: 0.3, max: 1, jitter: 0, reverb: 0.3,
+  build(v, p) {
+    const T = v.t, b = 60 / 140;
+    // short triumphant brass flourish (major), the squad won
+    for (const [bt, ms, len] of [[0, [62, 66, 69, 74], 0.4], [0.5, [64, 67, 71, 76], 0.4], [1, [66, 69, 74, 78], 2.2]]) {
+      ms.forEach((m, i) => brass(v, T + bt * b, mtof(m) * p, len * b, i === ms.length - 1 ? 0.5 : 0.24, { to: v.pan((i - 1.5) * 0.25, v.out), bright: 4200, a: 0.012, r: 0.4 }));
+    }
+    kick(v, T, 0.7); snare(v, T + 0.5 * b, 0.5); kick(v, T + b, 0.9); crash(v, T + b, 0.7, { d: 2 });
+    bass(v, T + b, mtof(38) * p, 2 * b, 0.7, { style: 'sub' });
+    [86, 90, 93, 98].forEach((m, i) => bell(v, T + (1.3 + i * 0.18) * b, mtof(m) * p, 0.12, { d: 0.8 }));
+  },
+});
+
 /* ------------------------------------------------------------------------------------------------------------ */
 export const SFX_GROUPS = {
   UI: ['ui_hover', 'ui_click', 'ui_back', 'ui_confirm', 'ui_toggle', 'ui_slider', 'ui_error'],
@@ -2232,6 +2495,8 @@ export const SFX_GROUPS = {
   Match: ['ready', 'go_horn', 'countdown_tick', 'one_minute', 'final_count', 'times_up', 'judge_drumroll', 'judge_reveal', 'victory_fanfare', 'defeat_jingle', 'xp_tick', 'level_up'],
   Zones: ['zone_ours', 'zone_theirs', 'zone_lost', 'zone_broken', 'zone_warn', 'zone_chance', 'zone_penalty', 'zone_shift', 'zone_final',
     'zone_overtime', 'zone_tick', 'zone_flood', 'zone_wipe', 'zone_hum'],
+  Boss: ['boss_roar', 'boss_step', 'boss_slam', 'boss_tele', 'boss_whistle', 'boss_barrel', 'boss_cannon_charge', 'boss_cannon_sweep', 'boss_gallop', 'boss_crash',
+    'boss_dizzy', 'boss_frenzy', 'crablet_chitter', 'crablet_pop', 'boss_hit', 'boss_crit', 'boss_phase', 'boss_title', 'boss_defeat', 'boss_sunk'],
 };
 export const SFX_NAMES = Object.values(SFX_GROUPS).flat();
 export const LOOP_NAMES = SFX_NAMES.filter((n) => SFX[n] && SFX[n].loop);

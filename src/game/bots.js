@@ -342,6 +342,7 @@ export class BotBrain {
     if (!G.match || !G.match.playing()) { it.move.set(0, 0, 0); it.fire = it.squid = it.sub = it.jump = it.special = false; this.mvMag = 0; return; }
     this.think -= dt; this.jumpCd -= dt; this.bombCd -= dt; this.strafeT -= dt; this.paintPause -= dt; this.dodgeCd -= dt;
     this.acqT += dt; this.t += dt;
+    if (G.boss) { this._bossTick(dt); return; }   // Boss Battle: a different job (below)
 
     // ---------------- perception
     if (this.think <= 0) {
@@ -626,6 +627,13 @@ export class BotBrain {
     // ---------------- wall climb (nav 'climb' edge): ink the wall column up to the top, then swim up it
     this._climbAim = this._climb(dt, move, it);
     if (this._climbAim) { wantYaw = this._climbAim.yaw; wantPitch = this._climbAim.pitch; }
+    this._tail(dt, move, wantYaw, wantPitch, aimDist, wantMove, thrAim, enemyVisible);
+  }
+
+  // shared by turf and boss play: bomb release, the aim spring, the smoothed move command, edge guard, stuck recovery.
+  // thrAim: a device / canopy the turf code is drawing a bead on; enemyVisible: in a duel (both unset in boss play)
+  _tail(dt, move, wantYaw, wantPitch, aimDist, wantMove, thrAim = null, enemyVisible = false) {
+    const a = this.a, it = a.intent, w = a.weapon;
     // throws and placements only happen in humanoid form: stay upright for the press and the release
     if (this._bombAim) { it.sub = true; it.squid = false; this._bombAim = false; this._releaseBomb = true; }
     else if (this._releaseBomb) { it.sub = false; it.squid = false; this._releaseBomb = false; }
@@ -1858,4 +1866,216 @@ export class BotBrain {
     return out;
   }
 
+
+  // ============================================================================================ Boss Battle
+  // One squad vs HULLBREAKER (docs/BOSS.md): spread round its flanks at weapon range, shoot what it exposes (eyes; the
+  // belly while it's stunned — everyone piles in), step out of every telegraph, hop the shockwave rings, duck under the
+  // sweep in own ink, pop the crablets that come for the squad, and clean boss ink off the routes (rollers most of all).
+  _bossTick(dt) {
+    const a = this.a, it = a.intent, w = a.weapon, boss = G.boss;
+    const inkFrac = a.ink / PLAYER.inkMax;
+    it.fire = false; it.sub = false; it.special = false; it.squid = false; it.jump = false;
+    if (this.think <= 0) { this.think = 0.12 + Math.random() * 0.1; this._bossPerceive(boss); }
+    this.react -= dt; this.evadeT = (this.evadeT || 0) - dt;
+    const th = Object.assign(this._th || (this._th = {}), boss.hz.threat(a.pos.x, a.pos.y, a.pos.z, 1.4));   // (threat() reuses its result)
+    // human-ish: a new telegraph takes a reaction time to register, and now and then a ring hop is simply missed
+    if (th.level > 0 || th.ringIn >= 0) {
+      if (this.thSeen === undefined) { this.thSeen = this.t + this.diff.reaction * (0.5 + Math.random() * 0.9); this.hopMiss = Math.random() < (0.45 - this.diff.fireDiscipline * 0.4); }
+      if (this.t < this.thSeen) { th.level = 0; th.ringIn = -1; th.beam = false; th.cover = false; }
+    } else this.thSeen = undefined;
+    // ---- mode: refill when dry (unless a crablet is right on us), else fight
+    if (this.mode === 'refill' && inkFrac >= this.refillUntil) { this.mode = 'boss'; this.path = null; this.goalTimer = 0; }
+    if (this.mode !== 'refill' && inkFrac < 0.1 && !(this.bTgt?.crab && this.bTgt.dist < 4 && inkFrac > 0.03)) { this.mode = 'refill'; this.refillUntil = 0.8 + Math.random() * 0.15; this.path = null; }
+    if (this.mode !== 'refill') this.mode = 'boss';
+    // ---- where to go
+    this.goalTimer -= dt; this.repath -= dt;
+    const evading = th.level > 0.2 && !(th.beam && a.groundTeam === 1);   // in own ink under a sweep: just dive
+    if (evading && (this.evadeT <= 0 || !this.path)) { this._bossEvade(boss, th); this.evadeT = 0.45; }
+    else if (!evading && this._wasEvading) { this.path = null; this.goalTimer = 0; }
+    this._wasEvading = evading;
+    if (!evading) {
+      if (this.mode === 'refill') { if (this.repath <= 0 || !this.path) this._pickRefill(); }
+      else if (this.goalTimer <= 0 || !this.path || this.pi >= this.path.length || (boss.stunned && !this._rushing)) this._bossGoal(boss);
+    }
+    const move = this._steer(dt);
+    let wantMove = move.lengthSq() > 0.01;
+    // ---- aim + fire
+    let wantYaw = wantMove ? Math.atan2(move.x, move.z) : a.yaw, wantPitch = -0.1, aimDist = 6;
+    const T = this.bTgt;
+    const dive = th.beam && a.groundTeam === 1;   // submerged in own ink: the beam passes over
+    this.target = null;
+    if (T && this.mode === 'boss' && !dive) {
+      const tp = T.shape ? T.shape.pos : T.pos;
+      _v.set(tp.x, tp.y, tp.z);
+      _v2.copy(_v); _v2.x -= a.pos.x; _v2.y -= a.pos.y + 1.1; _v2.z -= a.pos.z;
+      const dist = Math.hypot(_v2.x, _v2.z);
+      T.dist = dist;
+      const idealYaw = Math.atan2(_v2.x, _v2.z), idealPitch = Math.atan2(_v2.y, dist);
+      aimDist = _v2.length();
+      const e = this.diff.aimError * 0.8;
+      const acq = Math.exp(-this.acqT / Math.max(0.12, this.diff.reaction * 0.9));
+      const wander = (x) => Math.sin(x) * 0.6 + Math.sin(x * 2.27 + 1.3) * 0.4;
+      wantYaw = idealYaw + e * (0.75 * wander(this.t * 1.7 + this.ph1) + 2.4 * acq * this.acqSignY);
+      wantPitch = idealPitch + e * 0.6 * (0.75 * wander(this.t * 2.1 + this.ph2) + 1.6 * acq * this.acqSignP);
+      this.target = T;
+      const range = this._range() + (T.crab ? 0 : T.rad * 0.6);
+      const inRange = dist < range * (w.kind === 'charger' ? 1.0 : 1.05);
+      // circle-strafe a little while holding position (a squad that stands still gets slammed)
+      if (!wantMove && !th.level && w.kind !== 'charger') {
+        if (this.strafeT <= 0) { this.strafeT = 0.8 + Math.random() * 1.4; this.strafe = Math.random() < 0.5 ? -1 : 1; this.strafeAmp = 0.35 + Math.random() * 0.4; }
+        this.strafeS += (this.strafe * this.strafeAmp - this.strafeS) * (1 - Math.exp(-4 * dt));
+        const nx = _v2.x / Math.max(dist, 0.01), nz = _v2.z / Math.max(dist, 0.01);
+        move.set(-nz * this.strafeS, 0, nx * this.strafeS);
+        if (dist < 4) move.x -= nx * 0.6, move.z -= nz * 0.6;   // not right under its claws
+        wantMove = move.lengthSq() > 0.01;
+      }
+      const off = Math.hypot(angleDiff(this.aimYaw, idealYaw), this.aimPitch - idealPitch);
+      const tol = Math.max(0.05, Math.atan2(T.rad, Math.max(dist, 0.5))) * (this._firing ? 2.4 : 1.5);
+      this._firing = false;
+      if (inRange && T.los && off < tol && this.react <= 0 && inkFrac > 0.02) {
+        const wr = a.weaponRunner;
+        if (w.kind === 'charger') { it.fire = !(wr.charging && wr.charge >= this.chargeRelease); if (wr.charging) move.multiplyScalar(0.3); }
+        else if (w.kind === 'splatling') { it.fire = !wr.streaming && !(wr.charging && wr.charge >= this.chargeRelease * 0.9); if (wr.charging) move.multiplyScalar(0.45); }
+        else if (w.kind === 'roller') it.fire = dist < 5.5 || (wr.rolling && dist < 8);
+        else it.fire = true;
+        this._firing = it.fire;
+        this.mode = 'fight';   // (the aim spring's combat stiffness while shooting; reset each frame)
+        if (this.bombCd <= 0 && !T.crab && a.ink > SUB.bomb.inkCost + 10 && dist > 5 && dist < 13 && Math.random() < 0.025) { it.sub = true; this.bombCd = 6 + Math.random() * 6; this._bombAim = true; }
+      } else if ((w.kind === 'charger' || w.kind === 'splatling') && a.weaponRunner.charging && T.los) it.fire = true;   // hold a charge through a blink
+      // specials: slam from under its claws, the storm cloud onto it
+      if (a.specialReady() && !th.level && !T.crab) {
+        if (w.special === 'slam' && dist < 5.5) it.special = true;
+        if (w.special === 'storm' && dist < 13 && T.los) it.special = true;
+      }
+    }
+    // ---- not shooting it: clean boss ink off the way (and rollers roll it up)
+    if (!it.fire && this.mode !== 'refill' && !dive && inkFrac > 0.15) {
+      const aheadYaw = wantMove ? Math.atan2(move.x, move.z) : a.yaw;
+      const st = G.paint.regionStats(a.pos.x + Math.sin(aheadYaw) * 3, a.pos.y, a.pos.z + Math.cos(aheadYaw) * 3, 2.5, a.team, _stats);
+      if (a.groundTeam === 2 || (st.n && st.enemy > 0.2)) {
+        this.sweep += dt * 2.1;
+        if (this.mode !== 'fight') { wantYaw = aheadYaw + (w.kind === 'roller' ? 0 : Math.sin(this.sweep) * 0.5); wantPitch = w.kind === 'charger' ? -0.12 : w.kind === 'blaster' ? -0.28 : -0.42; }
+        it.fire = w.kind === 'roller' ? wantMove : w.kind !== 'charger' && w.kind !== 'splatling' ? true : !a.weaponRunner.charging || a.weaponRunner.charge < 0.6;
+      }
+    }
+    if (this.mode === 'refill') {
+      it.squid = a.groundTeam === 1 || this._pathRemaining() > 2;
+      if (a.groundTeam !== 1 && this._pathRemaining() < 1.5 && inkFrac > 0.03) { it.squid = false; it.fire = true; wantPitch = -1.0; }
+    }
+    // ---- dodges: hop the shockwave, dive under the sweep, swim when travelling through own ink
+    if (th.ringIn >= 0 && th.ringIn < 0.2 && a.grounded && this.jumpCd <= 0 && !this.hopMiss) { it.jump = true; this.jumpCd = 0.5; }
+    if (dive) { it.squid = true; it.fire = false; }
+    else if (!it.fire && !a.weaponRunner.charging && a.groundTeam === 1 && (this._pathRemaining() > 4 || evading)) it.squid = true;
+    if (!wantMove && !it.fire && a.groundTeam !== 1) it.squid = false;
+    this._tail(dt, move, wantYaw, wantPitch, aimDist, wantMove);
+    if (this.mode === 'fight') this.mode = 'boss';
+  }
+
+  // what to shoot: a crablet that's closing in, else the part of the boss worth hitting that it can see
+  _bossPerceive(boss) {
+    const a = this.a, eye = _v3.copy(a.pos); eye.y += 1.2;
+    let T = null;
+    for (const c of boss.crabs.values()) {
+      if (c.dead) continue;
+      const d = Math.hypot(c.x - a.pos.x, c.z - a.pos.z);
+      if (d > 9 || (T && d >= T.dist)) continue;
+      if (!G.physics.los(eye, _v.set(c.x, c.y + 0.35, c.z))) continue;
+      T = { crab: c, pos: new THREE.Vector3(c.x, c.y + 0.35, c.z), rad: 0.5, dist: d, los: true };
+    }
+    if (T) { T.pos.set(T.crab.x, T.crab.y + 0.35, T.crab.z); }
+    else if (boss.visible && !boss.dead) {
+      // keep a chosen spot for a while; the belly (when open) and the eyes are worth 2.5×
+      this.shapeT = (this.shapeT || 0) - 0.2;
+      const shapes = boss.model.hitShapes.filter((h) => h.active);
+      const belly = shapes.find((h) => h.weak && h.socket === 'belly');
+      let pick = this.bTgt && !this.bTgt.crab && this.shapeT > 0 && this.bTgt.shape.active ? this.bTgt.shape : null;
+      if (belly && pick !== belly) pick = null;
+      if (!pick) {
+        this.shapeT = 1.2 + Math.random() * 1.5;
+        const eyes = this.a.weapon.kind === 'charger' || Math.random() < 0.25 + this.diff.fireDiscipline * 0.3;
+        const order = shapes.slice().sort((h1, h2) => {
+          const s = (h) => (h === belly ? -100 : h.weak && eyes ? -50 : h.weak ? 10 : 0) + h.pos.distanceTo(eye);
+          return s(h1) - s(h2);
+        });
+        for (const h of order) if (G.physics.los(eye, h.pos)) { pick = h; break; }
+        if (!pick) pick = order.find((h) => !h.weak) || null;
+      }
+      if (pick) {
+        const los = G.physics.los(eye, pick.pos);
+        T = this.bTgt && this.bTgt.shape === pick ? this.bTgt : { shape: pick, rad: pick.r * 0.85, weak: pick.weak, dist: pick.pos.distanceTo(a.pos) };
+        T.los = los;
+      }
+    }
+    const prev = this.bTgt;
+    if (T && (!prev || (prev.shape || prev.crab) !== (T.shape || T.crab))) {
+      this.react = this.diff.reaction * (0.6 + Math.random() * 0.5);
+      this.acqT = 0; this.acqSignY = (Math.random() < 0.5 ? -1 : 1) * (0.5 + Math.random() * 0.5); this.acqSignP = (Math.random() - 0.5) * 1.2;
+    }
+    this.bTgt = T;
+  }
+
+  // a spot to fight from: weapon range off its flank (not in front of it — slams, sweeps and charges go that way), clear
+  // of the other bots, seeing it. When it's stunned everyone rushes the belly.
+  _bossGoal(boss) {
+    const a = this.a, w = a.weapon, nav = G.nav;
+    this.goalTimer = 2.4 + Math.random() * 2;
+    const stunned = boss.stunned || (boss.phase >= 3 && Math.random() < 0.3);
+    this._rushing = boss.stunned;
+    const fwd = boss.yaw, bx = boss.pos.x, bz = boss.pos.z;
+    // rollers keep the squad's routes clean while the boss isn't open
+    if (w.kind === 'roller' && !boss.stunned) {
+      let bestP = null, bs = 0.25;
+      for (let i = 0; i < 12; i++) {
+        const ang = Math.random() * Math.PI * 2, r = 3 + Math.random() * 12;
+        _v.set(a.pos.x + Math.cos(ang) * r, a.pos.y, a.pos.z + Math.sin(ang) * r);
+        const st = G.paint.regionStats(_v.x, _v.y, _v.z, 2.2, a.team, _stats);
+        if (!st.n || boss.hz.threat(_v.x, _v.y, _v.z, 1.5).level > 0) continue;
+        const sc = st.enemy - r * 0.02;
+        if (sc > bs) { bs = sc; bestP = _v.clone(); }
+      }
+      if (bestP && Math.random() < 0.7) { this._pathTo(bestP, 0.4); return; }
+    }
+    const reach = w.kind === 'charger' ? 15 : w.kind === 'roller' ? 3.2 : clamp(this._range() * 0.7, 4.5, 11);
+    const R = 3.4 + (boss.stunned ? Math.min(reach, 6) : reach);
+    const mates = G.actors.filter((o) => o !== a && o.bot && o.alive && o.bot.goal >= 0);
+    let best = -1, bs = -Infinity;
+    for (let i = 0; i < 12; i++) {
+      // bearing: its front when it's open (belly), else a flank or the rear
+      const off = stunned ? (Math.random() - 0.5) * 1.3 : (Math.random() < 0.5 ? 1 : -1) * (0.95 + Math.random() * 1.9);
+      const ang = fwd + off, r = R * (0.85 + Math.random() * 0.3);
+      _v.set(bx + Math.sin(ang) * r, boss.pos.y + 0.5, bz + Math.cos(ang) * r);
+      const id = nav.nearest(_v, 2.5);
+      if (id < 0) continue;
+      const n = nav.nodes[id];
+      if (Math.hypot(n.x - _v.x, n.z - _v.z) > 2.5) continue;
+      let s = -Math.hypot(n.x - a.pos.x, n.z - a.pos.z) * 0.08 + Math.random();
+      if (boss.hz.threat(n.x, n.y, n.z, 1.5).level > 0) s -= 6;
+      if (G.physics.los(_v2.set(n.x, n.y + 1.3, n.z), _v3.set(bx, boss.pos.y + 2.5, bz))) s += 3;
+      for (const m of mates) { const g = nav.nodes[m.bot.goal]; if (Math.hypot(g.x - n.x, g.z - n.z) < 4) s -= 2.5; }
+      if (s > bs) { bs = s; best = id; }
+    }
+    if (best < 0) { this.path = null; return; }
+    const n = nav.nodes[best];
+    this._pathTo(_v.set(n.x, n.y, n.z), 1.0);
+  }
+
+  // out of a telegraph: the reachable spot nearby with the least danger, biased along the escape direction
+  _bossEvade(boss, th) {
+    const a = this.a, nav = G.nav;
+    let best = -1, bs = -Infinity;
+    for (let i = 0; i < 12; i++) {
+      const ang = Math.atan2(th.ax, th.az) + (Math.random() - 0.5) * 2.4, r = 3 + Math.random() * 5;
+      _v.set(a.pos.x + Math.sin(ang) * r, a.pos.y, a.pos.z + Math.cos(ang) * r);
+      const id = nav.nearest(_v, 1.2);
+      if (id < 0) continue;
+      const n = nav.nodes[id];
+      const t = boss.hz.threat(n.x, n.y, n.z, 1.6);
+      const s = -t.level * 8 - Math.hypot(n.x - a.pos.x, n.z - a.pos.z) * 0.25 + (Math.sin(ang) * th.ax + Math.cos(ang) * th.az) * 1.5 + Math.random() * 0.5;
+      if (s > bs) { bs = s; best = id; }
+    }
+    if (best < 0) return;
+    const n = nav.nodes[best];
+    this._pathTo(_v.set(n.x, n.y, n.z), 1.0);
+    this.goalTimer = 0.8;
+  }
 }

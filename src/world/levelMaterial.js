@@ -5,6 +5,36 @@ import { TEXLIB_GLSL } from './texlib.js';
 import { G } from '../core/ctx.js';
 import { inkUniforms, inkBeforeRender, INK_PARS, INK_COLOR, INK_ROUGH, INK_GEL, INK_SLOPE, INK_EMISSIVE, INK_LIGHTS, INK_LIGHT_MAPS, INK_SHADE } from './inkShading.js';
 
+// Street lamps light the deck at dusk: each bulb is a real punctual light through the material's own BRDF (diffuse +
+// the ink's wet coat, so fresh ink glints under a lamp), windowed to a few metres and culled per pixel in world space
+// (only fragments inside a pool pay for it). No shadows: the pools are soft and the bulbs sit over open deck.
+const MAX_LAMPS = 12, LAMP_R = 10, LAMP_HEX = '#ffc48a', LAMP_I = 16;
+const LAMP_LIGHTS = /* glsl */`
+for (int i = 0; i < ${MAX_LAMPS}; i++) {
+  if (i >= uLampN) break;
+  vec3 lw = uLamps[i] - vWPos;
+  float d2 = dot(lw, lw);
+  if (d2 > ${(LAMP_R * LAMP_R).toFixed(2)}) continue;
+  float w = clamp(1.0 - d2 * d2 / ${(LAMP_R ** 4).toFixed(1)}, 0.0, 1.0);
+  IncidentLight lampL;
+  lampL.direction = normalize((viewMatrix * vec4(lw, 0.0)).xyz);
+  lampL.color = uLampCol * (w * w / max(d2, 0.35));
+  lampL.visible = true;
+  RE_Direct(lampL, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
+}`;
+
+// Bulb positions of the stage's street lamps (same placement rule as decor.js _buildLamps: mirrored pairs, the arm
+// reaching 0.92 m toward the arena centre, bulb 4.9 m up) → uniforms; k = environment night factor (0 = off).
+export function setLevelLamps(mat, level, k = 0) {
+  const u = mat && mat.userData && mat.userData.uniforms;
+  if (!u || !u.uLamps) return;
+  const L = (level && level.layout && level.layout.decor && level.layout.decor.lamps) || [];
+  const pts = k > 0.01 ? [...L, ...L.map(([x, z]) => [-x, -z])].slice(0, MAX_LAMPS) : [];
+  pts.forEach(([x, z], i) => u.uLamps.value[i].set(x + 0.92 * (x > 0 ? -1 : 1), Math.max(0, level.groundHeight(x, z)) + 4.9, z));
+  u.uLampN.value = pts.length;
+  u.uLampCol.value.set(LAMP_HEX).multiplyScalar(LAMP_I * k);
+}
+
 export function createLevelMaterial(paintTexture, atlasSize, muralTexture = null, opts = {}) {
   const mat = new THREE.MeshPhysicalMaterial({
     color: 0xffffff, vertexColors: true, roughness: 0.82, metalness: 0.0,
@@ -26,6 +56,8 @@ export function createLevelMaterial(paintTexture, atlasSize, muralTexture = null
     uSeeFeet: { value: 0 },                  // local player's feet height (set per draw below)
     uSeeA2C: { value: 0 },                   // 1 when drawing into a multisampled target (alpha-to-coverage fade)
     uAO: { value: opts.lightmap ? 1.0 : 0.0 },
+    // dusk lamp pools (setLevelLamps, driven by main._applyNight): bulb positions (world) + warm colour × strength
+    uLamps: { value: Array.from({ length: MAX_LAMPS }, () => new THREE.Vector3()) }, uLampN: { value: 0 }, uLampCol: { value: new THREE.Color(0, 0, 0) },
     uAtlasSize: { value: atlasSize },
     uPpm: { value: opts.ppm || 20 },          // atlas texels per metre (from the paint system, set per draw)
     ...inkUniforms(),                        // wet-ink layer (inkShading.js): paint clock + ripple table
@@ -48,7 +80,7 @@ export function createLevelMaterial(paintTexture, atlasSize, muralTexture = null
       'asphalt', 'metalpanel', 'grate', 'brick', 'rubber', 'glasstile', 'pavers',
       /* 17 planks … 23 render (marina set) */ 'planks', 'hullpaint', 'nonslip', 'gelcoat', 'yard', 'weatherboard', 'render',
       /* 24 treads … 27 gangdeck (stairs + ramps) */ 'treads', 'stonestep', 'rampboard', 'gangdeck',
-      /* 28 … LAST_STAGE_SLOT: stage surfaces (stages/<id>/surfaces.js), concrete where a slot is unused */
+      /* 28 … LAST_STAGE_SLOT: stage-owned surfaces (stages/<id>/surfaces.js), concrete where a slot is unused */
       ...Array.from({ length: LAST_STAGE_SLOT - FIRST_STAGE_SLOT + 1 }, (_, k) => (STAGE_SURFACES.find((s) => s.slot === FIRST_STAGE_SLOT + k) || { name: 'concrete' }).name),
       /* TL_SIDE */ 'concrete'];
     const SIDE = map.length - 1;
@@ -128,6 +160,9 @@ uniform float uInkGlow;
 uniform sampler2D uMural;
 uniform sampler2D uLight;
 uniform float uAO;
+uniform vec3 uLamps[${MAX_LAMPS}];
+uniform int uLampN;
+uniform vec3 uLampCol;
 uniform vec3 uSeeA;
 uniform vec3 uSeeB;
 uniform float uSeeOn;
@@ -656,6 +691,7 @@ ${INK_SLOPE}
   vec3 wn = normalize(nBase - slope.x * T - slope.y * Bt);
   normal = normalize((viewMatrix * vec4(wn, 0.0)).xyz);
 }`)
+      .replace('#include <lights_fragment_begin>', `#include <lights_fragment_begin>${LAMP_LIGHTS}`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>${INK_SHADE}`)
       .replace('#include <aomap_fragment>', `#include <aomap_fragment>
 if (uAO > 0.0 && vLightUv.x >= 0.0) {
@@ -678,6 +714,6 @@ ${INK_EMISSIVE}`)
     mat.side = THREE.DoubleSide;
     mat.defines = { ...(mat.defines || {}), GRATE: 1 };
   }
-  mat.customProgramCacheKey = () => 'inkwave-level-v5' + (opts.grate ? '-grate' : '');
+  mat.customProgramCacheKey = () => 'inkwave-level-v6' + (opts.grate ? '-grate' : '');
   return mat;
 }

@@ -478,6 +478,8 @@ function gearPath() {
   }
   return 'M' + pts.join('L') + 'Z';
 }
+/** Squid silhouette (64 box): pointed mantle, fins, four tentacles. Shared by GLYPHS.squidlet and the splashtag art. */
+export const SQUID_PATH = 'M32 3 C40 10 49 19 50 29 L44 31.5 L44 41 C44 44.5 42 46.5 39.5 46.5 L39.5 58 L35.5 53 L32 60 L28.5 53 L24.5 58 L24.5 46.5 C22 46.5 20 44.5 20 41 L20 31.5 L14 29 C15 19 24 10 32 3 Z';
 export const GLYPHS = {
   play: svg(`<path d="M21 12 L51 32 L21 52 Z" fill="currentColor" stroke="currentColor" stroke-width="7" stroke-linejoin="round"/>`),
   gear: svg(`<path d="${gearPath()}" fill="currentColor" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><circle cx="32" cy="32" r="8.5" fill="var(--k, #15121c)"/>`),
@@ -514,6 +516,22 @@ export const GLYPHS = {
   bolt: svg(`<path d="M36 4 L12 36 L30 36 L26 60 L52 26 L34 26 Z" fill="currentColor" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>`),
   target: svg(`<circle cx="32" cy="32" r="22" ${G} stroke-width="5"/><circle cx="32" cy="32" r="10" ${G} stroke-width="5"/><path d="M32 2 L32 14 M32 50 L32 62 M2 32 L14 32 M50 32 L62 32" ${G} stroke-width="5"/>`),
   feather: svg(`<path d="M52 8 Q22 12 16 40 L12 54 L17 50 Q46 44 52 8 Z" fill="currentColor" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><path d="M14 52 L40 22" stroke="var(--k, #15121c)" stroke-width="3" stroke-linecap="round" opacity=".45"/>`),
+  // online / lobby
+  online: svg(`<path d="M32 30 C38 30 42 34 42 40 C42 46 38 50 32 50 C26 50 22 46 22 40 C22 34 26 30 32 30 Z" fill="currentColor"/><path d="M26 49 L22 58 M32 50 L32 59 M38 49 L42 58" ${G} stroke-width="4.5"/><path d="M17 26 Q32 12 47 26" ${G} stroke-width="5"/><path d="M8 17 Q32 -4 56 17" ${G} stroke-width="5" opacity=".6"/><circle cx="28" cy="39" r="2.8" fill="var(--k, #15121c)"/><circle cx="36" cy="39" r="2.8" fill="var(--k, #15121c)"/>`),
+  copy: svg(`<rect x="21" y="8" width="33" height="38" rx="7" fill="none" stroke="currentColor" stroke-width="5.5"/><rect x="10" y="18" width="33" height="38" rx="7" fill="currentColor"/><path d="M18 31 L35 31 M18 40 L30 40" stroke="var(--k, #15121c)" stroke-width="4" stroke-linecap="round"/>`),
+  paste: svg(`<rect x="11" y="12" width="42" height="46" rx="8" fill="currentColor"/><rect x="21" y="5" width="22" height="13" rx="5" fill="currentColor" stroke="var(--k, #15121c)" stroke-width="3.5"/><path d="M21 31 L43 31 M21 40 L43 40 M21 49 L34 49" stroke="var(--k, #15121c)" stroke-width="4" stroke-linecap="round"/>`),
+  exit: svg(`<path d="M30 10 L14 10 Q10 10 10 14 L10 50 Q10 54 14 54 L30 54" ${G} stroke-width="6"/><path d="M26 32 L54 32 M44 21 L55 32 L44 43" ${G} stroke-width="6.5"/>`),
+  lock: svg(`<rect x="12" y="28" width="40" height="30" rx="7" fill="currentColor"/><path d="M20 29 L20 21 Q20 9 32 9 Q44 9 44 21 L44 29" ${G} stroke-width="6"/><circle cx="32" cy="41" r="4.5" fill="var(--k, #15121c)"/><path d="M32 43 L32 50" stroke="var(--k, #15121c)" stroke-width="4" stroke-linecap="round"/>`),
+  plus: svg(`<path d="M32 12 L32 52 M12 32 L52 32" ${G} stroke-width="8.5"/>`),
+  key: svg(`<circle cx="21" cy="32" r="13" fill="currentColor"/><circle cx="18" cy="32" r="4.5" fill="var(--k, #15121c)"/><path d="M33 32 L57 32 M48 32 L48 42 M56 32 L56 40" ${G} stroke-width="6"/>`),
+  smile: svg(`<circle cx="32" cy="32" r="26" fill="currentColor"/><circle cx="23.5" cy="27" r="4" fill="var(--k, #15121c)"/><circle cx="40.5" cy="27" r="4" fill="var(--k, #15121c)"/><path d="M20 38 Q32 50 44 38" fill="none" stroke="var(--k, #15121c)" stroke-width="4.5" stroke-linecap="round"/>`),
+  booyah: svg(`<path d="M10 26 L28 22 L48 9 L48 55 L28 42 L10 38 Z" fill="currentColor" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/><path d="M18 40 L22 55 L30 55 L27 42" fill="currentColor" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><path d="M54 24 L60 20 M55 32 L62 32 M54 40 L60 44" ${G} stroke-width="4"/>`),
+  hand: svg(`<path d="M22 56 Q12 50 11 38 L10 30 Q10 26 13.5 26 Q17 26 17.5 30 L18 36 L18 13 Q18 9 21.5 9 Q25 9 25 13 L25 30 L25 8 Q25 4 28.5 4 Q32 4 32 8 L32 30 L32 11 Q32 7 35.5 7 Q39 7 39 11 L39 31 L39 17 Q39 13 42.5 13 Q46 13 46 17 L46 40 Q46 54 36 57 Z" fill="currentColor" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/><path d="M50 8 Q57 12 58 20 M53 3 Q62 8 63 17" ${G} stroke-width="3.5" opacity=".8"/>`),
+  note: svg(`<path d="M24 46 L24 12 L52 6 L52 40" ${G} stroke-width="6"/><ellipse cx="17" cy="47" rx="9" ry="7" fill="currentColor" transform="rotate(-18 17 47)"/><ellipse cx="45" cy="41" rx="9" ry="7" fill="currentColor" transform="rotate(-18 45 41)"/><path d="M24 21 L52 15" ${G} stroke-width="6"/>`),
+  flex: svg(`<path d="M14 54 Q8 40 16 30 L24 20 Q22 14 26 10 Q32 6 37 10 L40 14 Q36 18 33 18 L30 24 Q38 22 46 26 Q56 32 54 44 Q52 54 40 56 Z" fill="currentColor" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><path d="M30 36 Q38 32 46 38" fill="none" stroke="var(--k, #15121c)" stroke-width="3.5" stroke-linecap="round" opacity=".45"/>`),
+  signal: svg(`<rect x="8" y="40" width="10" height="16" rx="3" fill="currentColor"/><rect x="27" y="28" width="10" height="28" rx="3" fill="currentColor"/><rect x="46" y="12" width="10" height="44" rx="3" fill="currentColor"/>`),
+  // squid silhouette (lobby head-count pips, splashtag patterns): outlined in ink, eyes cut out
+  squidlet: svg(`<path d="${SQUID_PATH}" fill="currentColor" stroke="var(--k, #15121c)" stroke-width="4" stroke-linejoin="round"/><circle cx="26.5" cy="36" r="3.4" fill="var(--k, #15121c)"/><circle cx="37.5" cy="36" r="3.4" fill="var(--k, #15121c)"/>`),
 };
 
 /** Kill-feed / stat glyphs */

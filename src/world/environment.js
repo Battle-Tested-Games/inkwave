@@ -36,9 +36,11 @@ const HEMI_FLOOR = 0.38; // = the sky-fill floor main.js applies after construct
 // ---------------------------------------------------------------------------------------------------------------
 const THEMES = {
   day: {
-    sunAz: 222, sunEl: 43,
-    sunColor: '#fff4e4', sunIntensity: 2.75,
-    hemiSky: '#cfe4ff', hemiGround: '#bda98f', hemiIntensity: 0.2,
+    // key : fill ≈ 3.5 : 1 on the deck — a warm key a little lower than noon (longer shadows model the blocks), a cool
+    // sky fill, and a warm bounce off the sunlit deck (hemi ground) so walls turned from the sun keep their form
+    sunAz: 222, sunEl: 39,
+    sunColor: '#fff0dc', sunIntensity: 3.3, skySun: 2.75,
+    hemiSky: '#b4d0ff', hemiGround: '#dcc3a0', hemiGroundK: 2.2, hemiIntensity: 0.45, envK: 0.45,
     zenith: '#1d6fdc', skyMid: '#5aa8f2', horizon: '#d4ecfa', ground: '#6fa4bd',
     horizonGlow: '#fff4dc', horizonGlowK: 0.05, glowColor: '#fff0cc',
     glow: [900, 0.9, 7.0, 0.06],
@@ -47,26 +49,31 @@ const THEMES = {
     seaDeep: '#0a4f8a', seaShallow: '#12a7b8', seaCrest: '#48e2d6', foam: '#f7fcff',
     seaAmbientK: 0.62, sunSpec: 1.0, waveStrength: 1.0,
     haze: [1 / 1850, 0.9, 260],
-    fog: [70, 1500],
+    fog: [25, 900],   // a breath of aerial perspective across the arena itself (≈ 4 % at the far spawn)
     night: 0,
-    grade: { uSat: 1.06, uVib: 0.12, uContrast: 1.07, uLift: 0.0, uVignette: 0.2, uShadowTint: [0.97, 0.99, 1.04], uHighTint: [1.025, 1.0, 0.97] },
+    grade: { uExposure: 0.9, uSat: 1.1, uVib: 0.12, uContrast: 1.09, uLift: 0.0, uVignette: 0.2, uShadowTint: [0.92, 0.97, 1.1], uHighTint: [1.035, 1.0, 0.955] },
     marina: { channel: '#0b4552', shade: '#05121a', calm: 0.55, lap: 1.0, caustic: 2.0, wet: 0.5 },
   },
   sunset: {
+    // golden key vs indigo fill: the low sun paints every face that turns to it orange, shade falls to a cool blue (the
+    // sky IBL is kept low so the purple sky doesn't flood the shade magenta); street lamps pool warm light (night: 1)
     sunAz: 206, sunEl: 15,
-    sunColor: '#ffb277', sunIntensity: 3.7,
-    hemiSky: '#9c8bd6', hemiGround: '#a8735c', hemiIntensity: 0.25,
-    zenith: '#1f2766', skyMid: '#6b4a9e', horizon: '#ff9f72', ground: '#4a4f7a',
+    sunColor: '#ffac4c', sunIntensity: 4.6, skySun: 3.7,
+    hemiSky: '#5e7fd6', hemiGround: '#c08a66', hemiGroundK: 1.6, hemiIntensity: 0.6, envK: 0.42,
+    zenith: '#1b2768', skyMid: '#56509e', horizon: '#ffa266', ground: '#4a4f7a',
     horizonGlow: '#ff8a4a', horizonGlowK: 0.55, glowColor: '#ffb35c',
     glow: [260, 2.2, 5.5, 0.55],
     sunDisk: '#ffd9a0', sunDiskK: 22, sunRadius: 1.7,
-    cloudLit: '#ffc39a', cloudLitK: 0.95, cloudShade: '#6d5a93', cloud: [0.4, 1.0, 1.0, 0.44],
+    cloudLit: '#ffc39a', cloudLitK: 0.95, cloudShade: '#62598f', cloud: [0.4, 1.0, 1.0, 0.44],
     seaDeep: '#1a2c5e', seaShallow: '#2f6f8f', seaCrest: '#6a8fc4', foam: '#ffe2cf',
     seaAmbientK: 0.5, sunSpec: 1.35, waveStrength: 1.0,
-    haze: [1 / 900, 0.96, 260],
-    fog: [60, 1300],
+    haze: [1 / 1100, 0.9, 260],
+    fog: [25, 800],
     night: 1,
-    grade: { uSat: 1.05, uVib: 0.1, uContrast: 1.08, uLift: 0.0, uVignette: 0.26, uShadowTint: [0.95, 0.96, 1.07], uHighTint: [1.04, 1.0, 0.95] },
+    grade: {
+      uExposure: 1.0, uSat: 1.05, uVib: 0.1, uContrast: 1.07, uLift: 0.0, uVignette: 0.28, uShadowTint: [0.88, 0.96, 1.16], uHighTint: [1.07, 1.0, 0.88],
+      bloom: [0.4, 0.55, 1.7],   // lanterns, lit windows and the sun's halo bloom a little at dusk
+    },
     // marina stages at dusk (Halyard): ink-blue channels, near-black under the decks, orange caustics off the low sun
     marina: { channel: '#132140', shade: '#04060d', calm: 0.55, lap: 1.0, caustic: 1.7, wet: 0.55 },
   },
@@ -75,8 +82,8 @@ const THEMES = {
   // harbour water of the `marina` block (planar reflections, hull contact foam, caustics, under-deck shade).
   golden: {
     sunAz: 194, sunEl: 28,
-    sunColor: '#ffd9ae', sunIntensity: 3.35,
-    hemiSky: '#bcd2f0', hemiGround: '#b39a7c', hemiIntensity: 0.4,
+    sunColor: '#ffd9ae', sunIntensity: 3.6, skySun: 3.35,
+    hemiSky: '#aecaf0', hemiGround: '#cfb08a', hemiGroundK: 1.8, hemiIntensity: 0.42, envK: 0.5,
     zenith: '#2a62b2', skyMid: '#72a3d6', horizon: '#f0d8b8', ground: '#5b7d90',
     horizonGlow: '#ffbf80', horizonGlowK: 0.3, glowColor: '#ffd29a',
     glow: [480, 1.5, 6.0, 0.24],
@@ -85,10 +92,10 @@ const THEMES = {
     seaDeep: '#0a3f53', seaShallow: '#16707a', seaCrest: '#5fc9b6', foam: '#fff6ea',
     seaAmbientK: 0.6, sunSpec: 1.2, waveStrength: 0.8,
     haze: [1 / 1650, 0.9, 240],
-    fog: [60, 1400],
+    fog: [30, 1000],
     night: 0,
     shafts: 1,
-    grade: { uSat: 1.05, uVib: 0.12, uContrast: 1.08, uLift: 0.0, uVignette: 0.22, uShadowTint: [0.94, 0.98, 1.07], uHighTint: [1.06, 1.0, 0.925] },
+    grade: { uExposure: 0.95, uSat: 1.05, uVib: 0.12, uContrast: 1.1, uLift: 0.0, uVignette: 0.22, uShadowTint: [0.93, 0.98, 1.09], uHighTint: [1.06, 1.0, 0.925] },
     marina: {
       channel: '#0d3a37',   // water colour hugging hulls / quay faces (bottle green, darker)
       shade: '#06110f',     // water under the floating decks
@@ -165,6 +172,10 @@ vec3 skyGradient(vec3 d) {
   c += uHorizonGlow * band * (0.2 + 0.8 * az * az * az);
   float sd = max(dot(normalize(vec3(d.x, hp, d.z)), uSunDir), 0.0);
   c += uGlowColor * (pow(sd, uGlowParams.x) * uGlowParams.y + pow(sd, 6.0) * uGlowParams.w);
+  // dusk: the horizon opposite the sun lies in the earth's shadow — cooler and dimmer than the sunward side, so the
+  // far shore / skyline away from the sun hazes into lavender-blue instead of glowing salmon (sky, env map and haze)
+  float anti = (1.0 - az) * (1.0 - az);
+  c *= mix(vec3(1.0), vec3(0.7, 0.74, 0.95), uNight * anti * exp(-hp * 2.5));
   c = mix(c, uGround, smoothstep(0.0, -0.22, h));
   return c;
 }
@@ -960,7 +971,7 @@ const HZ_FRAG_EMISSIVE = /* glsl */`
   hzEmit += vColor.rgb * gAmt * (vGlow > 1.5 ? max(uNight, 0.35) : uNight) * 7.0;
 #endif
 #ifdef HZ_CITY
-  hzEmit += uNight * hzLitCol * 3.0;
+  hzEmit += uNight * hzLitCol * 1.5;   // warm lit windows, not white: 3.0 blew them out through the tone curve
 #endif
 #ifdef HZ_WATERLINE
   float wl2 = vHzWorld.y - ${WATER_Y.toFixed(3)};
@@ -982,6 +993,8 @@ const HZ_FRAG_HAZE = /* glsl */`
   float fres = 0.05 + 0.95 * pow(1.0 - clamp(dot(-V, wn2), 0.0, 1.0), 5.0);
   vec3 refl = min(skyGradient(normalize(vec3(Rr.x, max(Rr.y, 0.02), Rr.z))), vec3(1.1));
   gl_FragColor.rgb = mix(gl_FragColor.rgb, refl * mix(0.92, 0.55, uNight), hzWin * clamp(0.18 + fres * 0.75, 0.0, 0.85) * (1.0 - uNight * 0.75));
+  // dusk: the skyline across the bay settles a stop darker so its lit windows carry it (was one flat salmon glow)
+  gl_FragColor.rgb *= 1.0 - 0.38 * uNight;
 }
 #endif
 gl_FragColor.rgb = applyHaze(gl_FragColor.rgb, vHzWorld) + hzEmit * exp(-length(vHzWorld - cameraPosition) * uHaze.x * 0.35);
@@ -1443,6 +1456,7 @@ function makeIsland(o) {
 // Environment
 // ---------------------------------------------------------------------------------------------------------------
 export class Environment {
+  static get THEMES() { return THEMES; }   // audit / lab hook: tweak a theme live, then setTheme(name)
   constructor(renderer, scene, opts = {}) {
     this.renderer = renderer;
     this.scene = scene;
@@ -1706,7 +1720,7 @@ export class Environment {
   // single GPU job runs long; ~0.1–0.3 s once per theme change.
   _bakeClouds(T) {
     const r = this.renderer, u = this._cloudMat.uniforms;
-    u.uSunCol.value.copy(lin(T.sunColor, T.sunIntensity / 2.75));
+    u.uSunCol.value.copy(lin(T.sunColor, (T.skySun ?? T.sunIntensity) / 2.75));
     u.uCov.value = T.cloudCov ?? 0.46;
     u.uSeed.value = T.cloudSeed ?? 3.0;
     const prev = r.getRenderTarget(), ac = r.autoClear, xr = r.xr.enabled;
@@ -2990,7 +3004,9 @@ export class Environment {
     U.uCloudLit.value.copy(lin(T.cloudLit, T.cloudLitK)); U.uCloudShade.value.set(T.cloudShade);
     U.uCloudParams.value.set(...T.cloud);
     U.uSeaDeep.value.set(T.seaDeep); U.uSeaShallow.value.set(T.seaShallow); U.uSeaCrest.value.set(T.seaCrest); U.uFoamColor.value.set(T.foam);
-    U.uSunLight.value.copy(lin(T.sunColor, T.sunIntensity / Math.PI));
+    // sky / clouds / sea keep the sun strength they were tuned with (skySun) — the key light on the world is balanced on
+    // its own (sunIntensity vs hemi + envK) without re-exposing the sky
+    U.uSunLight.value.copy(lin(T.sunColor, (T.skySun ?? T.sunIntensity) / Math.PI));
     U.uSeaAmbient.value.copy(U.uSkyMid.value).lerp(U.uHorizon.value, 0.5).multiplyScalar(T.seaAmbientK);
     U.uSunSpec.value = T.sunSpec; U.uWaveStrength.value = T.waveStrength;
     this.grade = T.grade;    // colour grade the renderer applies for this theme
@@ -3013,10 +3029,13 @@ export class Environment {
 
     this.sun.color.set(T.sunColor);
     this.sun.intensity = T.sunIntensity;
-    // main.js lifts the sky fill once after construction (max(theme, HEMI_FLOOR)); apply the same floor on every theme
-    // change so a stage/time looks identical whether it was booted into or switched to mid-session
-    this.hemi.color.set(T.hemiSky); this.hemi.groundColor.set(T.hemiGround);
-    this.hemi.intensity = Math.max(T.hemiIntensity, HEMI_FLOOR);
+    // sky fill = directional hemisphere (sky above, warm ground bounce below) + the omnidirectional sky IBL; both set
+    // here on every theme change so a stage/time looks identical whether it was booted into or switched to
+    // hemiGroundK: the ground term is the sunlit deck's bounce (fake GI) — brighter than the sky term, which the IBL
+    // already carries — so walls and faces turned away from the sun keep their form instead of crushing to black
+    this.hemi.color.set(T.hemiSky); this.hemi.groundColor.set(T.hemiGround).multiplyScalar(T.hemiGroundK ?? 1);
+    this.hemi.intensity = T.hemiIntensity;
+    this.scene.environmentIntensity = T.envK ?? 0.66;
     this.fogColor.copy(U.uHorizon.value).lerp(U.uSkyMid.value, 0.15);
     if (this.scene.fog && this.scene.fog.isFog) { this.scene.fog.color.copy(this.fogColor); this.scene.fog.near = T.fog[0]; this.scene.fog.far = T.fog[1]; }
     this.lhBeam.visible = T.night > 0.01;

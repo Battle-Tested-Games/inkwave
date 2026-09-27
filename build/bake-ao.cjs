@@ -14,7 +14,7 @@ const OPTS = { ppm: 8, size: 2048, rays: 96, dist: 3.5, floor: 0.65, strength: 0
 // '<id>' bakes the shared (Turf War) build; '<id>.zones' bakes that stage's Zone Control variant (src/world/variants.js)
 const layouts = process.argv.slice(2).filter((a) => /^[a-z0-9_-]+(\.[a-z]+)?$/i.test(a) && !a.endsWith('.cjs'));
 
-require('./../electron/main.js');
+require('./../electron/main.cjs');
 
 // 8-bit grayscale PNG (colour type 0), same format as the shipped bakes
 function grayPNG(size, pixels) {

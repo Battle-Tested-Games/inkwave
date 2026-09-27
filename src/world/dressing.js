@@ -113,7 +113,7 @@ export const DRESSING = {
 
 // stage packs that own their own placement lists
 const EXTRA = { halyard: HALYARD_VESSELS };
-for (const [id, s] of Object.entries(STAGES)) if (s.PLACEMENTS) EXTRA[id] = s.PLACEMENTS;
+for (const [id, st] of Object.entries(STAGES)) if (st.PLACEMENTS) EXTRA[id] = st.PLACEMENTS;
 
 // Expand the half-list into world placements for both halves.
 export function dressingFor(layoutId) {

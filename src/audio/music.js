@@ -7,6 +7,8 @@
 //
 //   import { music } from './music.js';
 //   music.play('battle', { fade: 1 });   // 'title' | 'menu' | 'battle' | 'battle_final' | 'results_win' | 'results_lose' | null
+//                                        // boss mode: 'boss' → 'boss_2' → 'boss_3' (same tempo: phase changes sync to the bar)
+//   music.remap = (track) => track       // optional router (boss director maps 'battle'/'battle_final' to the boss track)
 //   music.setIntensity(0..1);            // adds / removes layers (drums drop to hats-only at low intensity)
 //   music.stop(fade)
 //
@@ -801,6 +803,18 @@ const LOSE_LEAD =
   'E5/6 D5/2 C5/4 B4/4 | C5/6 A4/2 C5/4 E5/4 | F5/6 E5/2 D5/4 C5/4 | B4/8 G#4/8 | ' +
   'E5/6 D5/2 C5/4 B4/4 | C5/6 A4/2 C5/4 E5/4 | F5/4 A5/4 G5/4 F5/4 | E5/12 r/4';
 
+const BOSS_RIFF = 'D3/2 D3/1 D3/1 F3/2 D3/2 E3/1 F3/1 A3/2 G#3/2 G3/2 | D3/2 D3/1 D3/1 F3/2 D3/2 C4/2 A3/2 Bb3/2 A3/2';
+const BOSS_RIFF3 = 'D3/1 D3/1 Eb3/2 D3/1 D3/1 A3/2 Ab3/2 D3/1 D3/1 C4/2 Bb3/2 | D3/1 D3/1 Eb3/2 D3/1 D3/1 F3/2 E3/2 Eb3/2 D3/4';
+const BOSS_A_LEAD =
+  'D5/3 F5/3 A5/2 G5/2 F5/2 E5/2 C5/2 | D5/4 Bb4/4 F5/4 D5/4 | E5/3 G5/3 C6/2 Bb5/2 A5/2 G5/4 | A5/6 G5/2 E5/2 C#5/2 E5/4 | ' +
+  'D5/3 F5/3 A5/2 G5/2 F5/2 E5/2 C5/2 | D5/4 Bb4/4 F5/4 Bb5/4 | C6/3 Bb5/3 A5/2 G5/2 E5/2 C5/4 | C#5/4 E5/4 A5/4 C#6/4';
+const BOSS_B_LEAD =
+  'G5/4 Bb5/4 A5/2 G5/2 F5/4 | A5/6 F5/2 D5/8 | Eb5/2 G5/2 Bb5/4 C6/2 Bb5/2 G5/4 | A5/4 C#6/4 E6/4 A5/4 | ' +
+  'G5/4 Bb5/4 D6/2 C6/2 Bb5/4 | A5/6 F5/2 D5/4 F5/4 | G5/2 Bb5/2 Eb6/4 D6/2 C6/2 Bb5/4 | A5/2 G5/2 F5/2 E5/2 C#5/4 E5/4';
+const BOSS_C_LEAD =
+  'D6/2 C6/2 A5/2 F5/2 A5/4 D6/4 | Eb6/3 D6/3 Bb5/2 G5/4 Bb5/4 | A5/2 F5/2 D5/2 F5/2 A5/2 D6/2 F6/4 | E6/4 C#6/4 Bb5/4 G5/4 | ' +
+  'D6/2 C6/2 A5/2 F5/2 A5/4 D6/4 | Eb6/3 G6/3 F6/2 Eb6/4 D6/4 | C6/2 A5/2 F5/2 A5/2 D6/4 C#6/4 | E6/6 D6/2 C#6/8';
+
 export const SONGS = {
   title: {
     name: 'Splash Attitude', bpm: 128, swing: 0.05, key: 'D minor', pump: 0.22,
@@ -962,6 +976,88 @@ export const SONGS = {
       },
     },
     order: ['A'], loopFrom: 0,
+  },
+
+  // ---- boss mode (HULLBREAKER): one tempo so each phase change lands beat-matched on a bar line with a riser
+  boss: {
+    name: 'Hull Alarm', bpm: 140, swing: 0, key: 'D minor', pump: 0.26,
+    inst: { bass: 'punk', chords: 'guitar', lead: 'saw', lead2: 'pulse', arp: 'pluck' }, riffBass: true,
+    mix: { lead: 0.26 },
+    sections: {
+      intro: {
+        bars: 2, chords: ['D5'], riff: BOSS_RIFF, riser: 1,
+        drums: { k: ['X.......X.......', 'X...X...X...X...'], s: ['................', 'x.x.x.x.xxxxXXXX'], x: ['X...............', '................'] },
+      },
+      A: {
+        bars: 8, crash: true, chords: ['D5'], riff: BOSS_RIFF,
+        drums: { k: 'X..X..X.X..X..x.', s: '....X.......X...', h: 'x.c.x.c.x.c.x.oc' },
+        fills: { s: '....X.....g.X.xx' },
+      },
+      B: {
+        bars: 8, crash: true, chords: ['Dm', 'Bb', 'C', 'A'], lead: BOSS_A_LEAD, pad: true,
+        drums: { k: 'X...X...X...X...', s: '....X.......X...', h: 'x.o.x.o.x.o.x.o.' },
+        fills: { s: '....X.....x.X.xx' },
+        bass: 'R.RR.RO.R.RR.R5n',
+        stabs: 'X-.x..x-.x..x-.x',
+      },
+    },
+    order: ['intro', 'A', 'B', 'A', 'B'], loopFrom: 1,
+  },
+
+  boss_2: {
+    name: 'Brood Tide', bpm: 140, swing: 0, key: 'D minor', pump: 0.3,
+    inst: { bass: 'punk', chords: 'guitar', lead: 'saw', lead2: 'pulse', arp: 'pluck' }, riffBass: true,
+    mix: { hats: 0.2, lead2: 0.15, arp: 0.12 },
+    sections: {
+      lift: {
+        bars: 1, chords: ['A5'], riser: 1,
+        drums: { k: 'X...X...X...X...', s: 'x.x.x.x.xxxxXXXX' },
+        bass: 'R-----R-----R-R-',
+        stabs: 'X-----X-----X-X-',
+      },
+      A: {
+        bars: 8, crash: true, chords: ['D5'], riff: BOSS_RIFF, arp: { rate: 1, pattern: 'up', oct: 2, lo: 62 },
+        drums: { k: 'X.XX..X.X.XX..x.', s: '....X.......X...', c: '....x.......x...', h: 'xcxcxcxcxcxcxcxc' },
+        fills: { s: '....X.....x.X.xx' },
+      },
+      B: {
+        bars: 8, crash: true, chords: ['Gm', 'Dm', 'Eb', 'A7'], lead: BOSS_B_LEAD, harmony: true, pad: true,
+        drums: { k: 'X.X.X.X.X.X.X.X.', s: '....X.......X...', c: '....x.......x...', h: 'x.o.x.o.x.o.x.o.' },
+        fills: { s: '....X...x.x.XxXx' },
+        bass: 'RrOrRrOrRrOrRrOn',
+        stabs: 'X-x-x-x-X-x-x-x-',
+        arp: { rate: 1, pattern: 'updown', oct: 2, lo: 62 },
+      },
+    },
+    order: ['lift', 'A', 'B'], loopFrom: 1,
+  },
+
+  boss_3: {
+    name: 'Shell Shock', bpm: 140, swing: 0, key: 'D phrygian', pump: 0.34,
+    inst: { bass: 'punk', chords: 'guitar', lead: 'saw', lead2: 'saw', arp: 'pluck' }, riffBass: true,
+    mix: { hats: 0.2, lead: 0.3, lead2: 0.16, arp: 0.12 },
+    sections: {
+      lift: {
+        bars: 1, chords: ['Eb5'], riser: 1,
+        drums: { k: 'X.X.X.X.X.X.X.X.', s: 'xxxxxxxxXXXXXXXX' },
+        bass: 'R.R.R.R.R.R.R.R.',
+        stabs: 'X-x-X-x-X-x-XxXx',
+      },
+      A: {
+        bars: 8, crash: true, chords: ['D5'], riff: BOSS_RIFF3, arp: { rate: 1, pattern: 'updown', oct: 2, lo: 62 },
+        drums: { k: 'XxX.XxX.XxX.XxX.', s: '....X.......X...', c: '....x.......x...', h: 'xcxcxcxcxcxcxcxc' },
+        fills: { s: '....X...xxxxXXXX' },
+      },
+      B: {
+        bars: 8, crash: true, chords: ['Dm', 'Eb', 'Dm', 'C#dim'], lead: BOSS_C_LEAD, harmony: true, pad: true,
+        drums: { k: 'X.XXX.XXX.XXX.XX', s: '....X.......X...', c: '....x.......x...', h: 'xoxoxoxoxoxoxoxo' },
+        fills: { s: 'x.x.x.x.xxxxXXXX' },
+        bass: 'RRORRROR5R5RRROn',
+        stabs: 'X-x-x-X-x-x-X-xx',
+        arp: { rate: 1, pattern: 'up', oct: 2, lo: 62 },
+      },
+    },
+    order: ['lift', 'A', 'B'], loopFrom: 1,
   },
 };
 
@@ -1280,6 +1376,8 @@ export class MusicEngine {
   advance(t) { this.vnow = t; this._tick(); }
 
   play(track, opts = {}) {
+    // a mode director (e.g. src/audio/bossAudio.js) can re-route requests: remap(track) → track to play instead
+    if (this.remap) { try { const r = this.remap(track); if (r !== undefined) track = r; } catch (e) { /* keep the request */ } }
     const fade = Math.max(0, opts.fade ?? 1.0);
     if (track != null && !SONGS[track] && !this.hasFile(track)) { console.warn('[music] unknown track', track); return; }
     if (!this.ctx) { this._want = { track, opts }; return; }

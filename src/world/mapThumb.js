@@ -9,7 +9,8 @@ function expand(layout) {
     ? { ...d, min: [-d.max[0], d.min[1], -d.max[2]], max: [-d.min[0], d.max[1], -d.min[2]] }
     : d.kind === 'obox' ? { ...d, center: [-d.center[0], d.center[1], -d.center[2]], oct: d.oct && [-d.oct[0], -d.oct[1], d.oct[2]] }
     : { ...d, low: [-d.low[0], d.low[1], -d.low[2]], high: [-d.high[0], d.high[1], -d.high[2]] };
-  const all = [...layout.single, ...layout.half, ...layout.half.map((d) => (d.oct && d.kind === 'box' ? { ...mirror(d), oct: [-d.oct[0], -d.oct[1], d.oct[2]] } : mirror(d)))];
+  // (rails are collision-only railings: nothing to draw)
+  const all = [...layout.single, ...layout.half, ...layout.half.map((d) => (d.oct && d.kind === 'box' ? { ...mirror(d), oct: [-d.oct[0], -d.oct[1], d.oct[2]] } : mirror(d)))].filter((d) => !d.rail);
   // octagon platforms (maps.js OCT) are drawn as one octagon instead of their plus + corner-slab parts
   const out = [], seen = new Set();
   for (const d of all) {
@@ -51,6 +52,12 @@ export function layoutThumbSVG(layout, theme = 'day', teams = ['#18c7e8', '#ff4a
       return { poly, top: d.center[1] + d.size[1] / 2, d };
     }
     const dx = d.high[0] - d.low[0], dz = d.high[2] - d.low[2];
+    if (Math.abs(dx) > 1e-3 && Math.abs(dz) > 1e-3) {
+      // a ramp running at an angle: its own quad (the along/across box below only fits axis-aligned ramps)
+      const l = Math.hypot(dx, dz), px = (-dz / l) * (d.width / 2), pz = (dx / l) * (d.width / 2);
+      const poly = [[d.low[0] + px, d.low[2] + pz], [d.high[0] + px, d.high[2] + pz], [d.high[0] - px, d.high[2] - pz], [d.low[0] - px, d.low[2] - pz]];
+      return { poly, top: d.high[1], ramp: true, d };
+    }
     const along = Math.abs(dz) > Math.abs(dx);
     const hw = d.width / 2;
     return along
@@ -61,9 +68,10 @@ export function layoutThumbSVG(layout, theme = 'day', teams = ['#18c7e8', '#ff4a
     const top = b.top;
     if (b.poly) {
       const pts = (dx, dy) => b.poly.map(([px, pz]) => `${(X(pz) + dx).toFixed(1)},${(Y(px) + dy).toFixed(1)}`).join(' ');
-      if (top > 0.2 && !b.d.grate) parts.push(`<polygon points="${pts(1.2 + top * 0.35, 1.2 + top * 0.45)}" fill="#1b2a44" opacity=".28"/>`);
+      if (top > 0.2 && !b.ramp && !b.d.grate) parts.push(`<polygon points="${pts(1.2 + top * 0.35, 1.2 + top * 0.45)}" fill="#1b2a44" opacity=".28"/>`);
       const k = Math.min(1, Math.max(0, top) / 5);
-      const fill = b.d.grate ? `url(#tgr${layout.id})` : top <= 0.05 ? (sunset ? '#f1cfae' : golden ? '#f4e6cf' : '#f3ecdd') : mix(sunset ? '#e8bf99' : golden ? '#ead6b6' : '#e7dcc6', sunset ? '#fbe6d0' : golden ? '#fff8ec' : '#ffffff', k);
+      const tint = b.d.pattern === 5 && b.d.color ? b.d.color : null;   // containers keep their colour
+      const fill = tint || (b.d.grate ? `url(#tgr${layout.id})` : b.ramp ? `url(#tst${layout.id})` : top <= 0.05 ? (sunset ? '#f1cfae' : golden ? '#f4e6cf' : '#f3ecdd') : mix(sunset ? '#e8bf99' : golden ? '#ead6b6' : '#e7dcc6', sunset ? '#fbe6d0' : golden ? '#fff8ec' : '#ffffff', k));
       parts.push(`<polygon points="${pts(0, 0)}" fill="${fill}" stroke="#2a3552" stroke-opacity="${top > 0.05 ? 0.35 : 0.15}" stroke-width="1" stroke-linejoin="round"/>`);
       continue;
     }

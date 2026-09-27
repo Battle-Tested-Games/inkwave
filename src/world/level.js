@@ -7,7 +7,8 @@ const _v2 = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
 
 export class Level {
-  // extra: collision-only boxes from set dressing ({min,max}) — solid, un-inkable, never rendered (the prop mesh is)
+  // extra: collision-only boxes from set dressing ({min,max}, or {obox, center, size, rotY} for a turned prop; optional
+  // roof / rail / perch flags) — solid, un-inkable, never rendered (the prop mesh is)
   constructor(layout, extra = []) {
     this.extra = extra;
     this.layout = layout;
@@ -28,6 +29,7 @@ export class Level {
         ? { kind: 'obox', center: c.center, size: c.size, rotY: c.rotY, paint: false, hidden: true, color: '#888888', roof: !!c.roof, rail: !!c.rail, perch: !!c.perch }
         : { kind: 'box', min: c.min, max: c.max, paint: false, hidden: true, color: '#888888', roof: !!c.roof, rail: !!c.rail, perch: !!c.perch }))];
     for (const d of defs) this._addBlock(d);
+    this.hasRails = this.blocks.some((b) => b.rail);   // (actors only run the railing foot check where there are rails)
     this._buildHash();
     for (const b of this.blocks) this._buildFaces(b);
   }
@@ -46,12 +48,11 @@ export class Level {
       mural: d.mural || null,
       noPaint: d.noPaint || null,
       grate: !!d.grate || !!d.rail, // walkable for kids, squids + ink + shots pass through, never inkable
-      roof: !!d.roof,  // off-limits top (roofs …): never inkable, anyone landing on it slides off
-      // perch: a top you can stand on (a vantage point reached by specials / super jumps) but never ink
-      perch: !!d.perch,
-      noNav: !!d.noNav,   // no route runs along its top (narrow walls a bot would only fall off)
-      // rail: railings / fences / grilles — kids can't walk through (but can hop up and stand on top), shots + ink +
-      // squids pass. Collision-only (the railing you see is a prop): a grate block that is never drawn or inked
+      roof: !!d.roof,              // off-limits top (roofs, crane legs …): never inkable, anyone landing on it slides off
+      perch: !!d.perch,            // a top you can stand on (overhead steel reached by a super jump) but never ink
+      noNav: !!d.noNav,            // no route runs along its top (narrow walls a bot would only fall off)
+      // rail: railings / fences — kids can't walk through (but can hop up and stand on top), shots + ink + squids pass.
+      // Collision-only (the railing you see is a prop): a grate block that is never drawn or inked
       rail: !!d.rail,
       hidden: !!d.hidden || !!d.rail, // collision-only (prop colliders, rails)
       bevel: d.bevel,
@@ -62,7 +63,7 @@ export class Level {
       b.center.set((d.min[0] + d.max[0]) / 2, (d.min[1] + d.max[1]) / 2, (d.min[2] + d.max[2]) / 2);
       b.half.set((d.max[0] - d.min[0]) / 2, (d.max[1] - d.min[1]) / 2, (d.max[2] - d.min[2]) / 2);
     } else if (d.kind === 'obox') {
-      // box turned about the vertical axis by rotY degrees (diagonal walls, angled decks, polygon plazas)
+      // box turned about the vertical axis by rotY degrees (a stage laid out at an angle, turned props)
       const a = (d.rotY * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
       b.center.set(d.center[0], d.center[1], d.center[2]);
       b.half.set(d.size[0] / 2, d.size[1] / 2, d.size[2] / 2);

@@ -12,6 +12,7 @@
 <p align="center">
   <a href="https://inkwave-aah.pages.dev"><b>▶ Play now</b></a> ·
   <a href="#controls">Controls</a> ·
+  <a href="#playing-online">Online</a> ·
   <a href="#running-locally">Run locally</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="CONTRIBUTING.md">Contributing</a>
@@ -28,7 +29,8 @@
 
 ## Features
 
-- **Two modes, 4 v 4.** Turf War (most ground painted wins) and Zone Control (hold the live zone to count down from 100 — rotating side zones, penalties, overtime). Play against bots on three difficulty levels.
+- **Game modes, 4 v 4.** Turf War (most ground painted wins) and Zone Control (hold the live zone to count down from 100 — rotating side zones, penalties, overtime). Play against bots on three difficulty levels.
+- **Online with friends.** Create a private room, share the five-character code, and up to eight players line up in the lobby with their loadouts and looks. Empty slots fill with bots; if someone drops, a bot takes over their squidkid mid-match.
 - **Squid form.** Hold to dive into your ink: swim fast, refill your tank, climb inked walls, dolphin-jump water gaps.
 - **Twelve weapons**, each with its own feel: Spritzer, Twinfire Pistols, Canopy Brolly (shotgun + launchable shield), Popper Blaster, Squall Spinner, Glint Charger, Tideline Bow (tri-arrow, two charge rings), Swell Roller, Swish Brush, Brine Cutlass (charged one-hit blade), Sponge Mitts (ink fists, charged leap, wall cling) and Bilge Bucket. Mix any main with any of 15 subs and 19 specials.
 - **Seven stages, day or dusk.** Tidewater Plaza, Kelpline Terminal, Halyard Marina, Saltpan Basin, Crossroads Market, Lockgate Canals and Terrace Heights, each a real place with its own layout. Some stages change a few pieces for Zone Control.
@@ -58,6 +60,26 @@
 
 Gamepads work on the hosted (https) version. On a plain `http://` LAN address browsers block the Gamepad API.
 
+## Playing online
+
+From the main menu choose **Online**, then **Create a room** and send your friends the code (or **Join a room** and
+type theirs). The host picks the stage, time of day, match length and whether bots fill empty slots; everyone else
+picks a team, weapon and look and readies up. The lineup, emotes and ready state are live for everyone in the room.
+
+Rooms run on a tiny relay (a Cloudflare Worker with one Durable Object per room, in [`server/`](server)). It only
+forwards messages: every player simulates their own squidkid and streams it, and everyone else draws it through the
+same animation system on a smoothed timeline about a tenth of a second behind. How that works, and the tools used to
+measure it, are in [`docs/NET.md`](docs/NET.md).
+
+To play online on your own network, run the relay next to the game:
+
+```bash
+npm install      # once: the relay runs on wrangler
+npm run relay    # ws://<this machine>:8787
+```
+
+A page opened from `localhost` or a LAN address uses that relay automatically; `?relay=wss://…` points it anywhere else.
+
 ## Running locally
 
 There is no build step. Any static file server works; the included one also serves to your LAN and sends no-cache headers so module updates are never stale.
@@ -84,6 +106,8 @@ npm run check-maps   # sanity-check every stage layout (and its Zone Control var
 ```
 
 Bot matches run headless and muted for tuning: `MAP=halyard MODE=turf SECS=180 npm run botlab` (see [`tools/botlab/README.md`](tools/botlab/README.md)).
+With the relay running, `npm run net-test` plays a real match between headless clients and reports what each
+screen drew (see [`docs/NET.md`](docs/NET.md#how-the-netcode-works-srcnetnetmatchjs)).
 
 ## How it works
 

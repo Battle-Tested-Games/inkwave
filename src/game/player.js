@@ -267,7 +267,12 @@ export class PlayerController {
         if (d < best) { best = d; bestT = _res.t; this.onTarget = e; }
       }
     }
-    if (this.onTarget) {
+    // boss mode: the crosshair stops on HULLBREAKER's shell (lobs land on it, the reticle lights up)
+    if (G.boss) {
+      const bd = G.boss.rayDist(start, fwd, best);
+      if (bd > 0 && bd < best) { this.onTarget = G.boss; a.aimPoint.copy(start).addScaledVector(fwd, bd); }
+    }
+    if (this.onTarget && this.onTarget !== G.boss) {
       // bullet magnetism: converge on the enemy's body axis at the height the crosshair crosses it
       const e = this.onTarget;
       const h = e.form === 'squid' ? PLAYER.squidHeight : PLAYER.height;

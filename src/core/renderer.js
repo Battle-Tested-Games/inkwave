@@ -12,6 +12,8 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { QUALITY } from '../config.js';
 import { G } from './ctx.js';
 
+const BLOOM = [0.28, 0.45, 2.4];   // default bloom: strength, radius, HDR threshold
+
 const GradeShader = {
   uniforms: {
     tDiffuse: { value: null },
@@ -21,6 +23,7 @@ const GradeShader = {
     uShadowTint: { value: new THREE.Vector3(0.975, 0.99, 1.035) },
     uHighTint: { value: new THREE.Vector3(1.025, 1.0, 0.972) },
     uLift: { value: 0.0 },
+    uExposure: { value: 1.0 },                           // per-theme exposure (the renderer's own exposure stays fixed: the lobby set shares it)
     uVignette: { value: 0.22 },
     uHurt: { value: 0 },
     uHurtColor: { value: new THREE.Color(1, 0.2, 0.3) },
@@ -30,10 +33,11 @@ const GradeShader = {
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
   fragmentShader: /* glsl */`
     uniform sampler2D tDiffuse; uniform float uSat; uniform float uVignette; uniform float uHurt; uniform vec3 uHurtColor; uniform float uFlash; uniform float uAspect;
-    uniform float uVib; uniform float uContrast; uniform vec3 uShadowTint; uniform vec3 uHighTint; uniform float uLift;
+    uniform float uVib; uniform float uContrast; uniform vec3 uShadowTint; uniform vec3 uHighTint; uniform float uLift; uniform float uExposure;
     varying vec2 vUv;
     void main(){
       vec4 c = texture2D(tDiffuse, vUv);
+      c.rgb *= uExposure;
       float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
       // vibrance: muted colours gain saturation, already-saturated ones (team ink) barely move
       float mx = max(c.r, max(c.g, c.b)), mn = min(c.r, min(c.g, c.b));
@@ -78,6 +82,10 @@ function isAppleGPU(gl) {
 export class Renderer {
   constructor(container, settings) {
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', stencil: false }));
+    // Shader status checks make every compile synchronous (the main thread waits on the GPU process for the link
+    // result): a mid-game compile then stalls input, netcode and all. Players run without them; ?shadercheck (the
+    // smoke test and dev tools) turns them back on so a broken shader still fails loudly.
+    r.debug.checkShaderErrors = typeof location !== 'undefined' && new URLSearchParams(location.search).has('shadercheck');
     r.outputColorSpace = THREE.SRGBColorSpace;
     r.toneMapping = THREE.NeutralToneMapping;
     r.toneMappingExposure = 1.0;
@@ -120,17 +128,19 @@ export class Renderer {
     if (q.ao) {
       const ao = (this.gtao = new GTAOPass(this.scene, this.camera, w, h));
       ao.output = GTAOPass.OUTPUT.Default;
-      ao.blendIntensity = 1.0;
-      ao.updateGtaoMaterial({ radius: 0.75, distanceExponent: 1.6, thickness: 1.0, scale: 1.15, samples: 12, distanceFallOff: 1.0 });
+      ao.blendIntensity = 0.8;   // never crush to black: fully enclosed spots (tunnel mouths, under the overpass) keep 20 % of their light
+      // contact AO: a metre-scale radius so crates, planters and pillar feet sit on the deck (it multiplies the lit
+      // frame, so it stays short-range — no dirty halos on sunlit walls)
+      ao.updateGtaoMaterial({ radius: 1.1, distanceExponent: 1.6, thickness: 1.0, scale: 1.5, samples: 12, distanceFallOff: 1.0 });
       ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 16 });
       if (this.appleGPU) { const set = ao.setSize.bind(ao); ao.setSize = (sw, sh) => set(Math.ceil(sw / 2), Math.ceil(sh / 2)); }
       comp.addPass(ao);
     }
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.28, 0.45, 2.4);
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), ...BLOOM);
     this.bloom.enabled = !!(q.bloom && this.settings.bloom);
     comp.addPass(this.bloom);
     this.grade = new ShaderPass(GradeShader);
-    this._gradeSrc = null;
+    this._gradeSrc = null;   // (re)apply the theme grade + bloom to the new passes
     comp.addPass(this.grade);
     // optional screen-FX pass (src/fx/screenfx.js) — runs in HDR linear space before tone mapping/output
     if (this.extraPass) comp.addPass(this.extraPass);
@@ -196,9 +206,12 @@ export class Renderer {
     if (gr && gr !== this._gradeSrc && this.grade) {
       this._gradeSrc = gr;
       const u = this.grade.uniforms;
-      for (const k of ['uSat', 'uVib', 'uContrast', 'uLift', 'uVignette']) if (gr[k] !== undefined) u[k].value = gr[k];
-      if (gr.uShadowTint) u.uShadowTint.value.set(...gr.uShadowTint);
-      if (gr.uHighTint) u.uHighTint.value.set(...gr.uHighTint);
+      for (const k of ['uSat', 'uVib', 'uContrast', 'uLift', 'uVignette', 'uExposure']) u[k].value = gr[k] ?? GradeShader.uniforms[k].value;
+      u.uShadowTint.value.set(...(gr.uShadowTint || [0.975, 0.99, 1.035]));
+      u.uHighTint.value.set(...(gr.uHighTint || [1.025, 1.0, 0.972]));
+      // bloom per theme: [strength, radius, threshold] — dusk lets lamps / lit windows bloom, daylight keeps it to the sun
+      const bl = gr.bloom || BLOOM;
+      this.bloom.strength = bl[0]; this.bloom.radius = bl[1]; this.bloom.threshold = bl[2];
     }
     this.composer.render();
   }

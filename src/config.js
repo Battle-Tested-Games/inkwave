@@ -514,7 +514,29 @@ export const MAPS = [
   { id: 'crossmarket', name: 'Crossroads Market', blurb: 'Narrow shop streets and an iron gallery close in on the glass Market Hall, where the No. 3 tram waits under the clock.', theme: 'golden', times: { day: 'golden', dusk: 'sunset' } },
   { id: 'lockgate', name: 'Lockgate Canals', blurb: 'Drained locks through a brick warehouse district: the canal splits the map, so hold the bridge and the gates.', theme: 'day', times: { day: 'day', dusk: 'sunset' } },
   { id: 'terraces', name: 'Terrace Heights', blurb: 'A whitewashed hill village: hold the terraces, fight for the stairs and drop in on the Piazzetta.', theme: 'golden', times: { day: 'golden', dusk: 'sunset' } },
+  // (src/world/stages/cargo, ported from PR #8's rebuilt Kelpline) — online only, humans only, never a Boss Battle
+  { id: 'cargo', name: 'Cargo Terminal', blurb: 'A container terminal at shift change: a gantry crane straddles the pier between two moored box ships.', theme: 'day', times: { day: 'day', dusk: 'sunset' }, onlineOnly: true, noBots: true, noBoss: true },
 ];
+// Stage rules (a MAPS entry's flags), enforced by the lobby host (net/session.js, net/mock.js), the menus and main.js:
+//   onlineOnly  only in the online lobby's stage picker — never the offline Play flow (Turf War or Boss Battle)
+//   noBots      humans only: "fill with bots" is forced off, a match needs 2+ players with one on each side, and a player
+//               who leaves mid-match is removed instead of handed to a bot; the menu backdrop runs without bots too
+//   noBoss      never a Boss Battle stage (a boss room switches away from it)
+export const mapById = (id) => MAPS.find((m) => m.id === id) || null;
+export const mapNoBots = (id) => !!mapById(id)?.noBots;
+export const mapBossOk = (id) => !!mapById(id) && !mapById(id).noBoss;
+export const mapOfflineOk = (id) => !!mapById(id) && !mapById(id).onlineOnly;
+export const OFFLINE_MAPS = MAPS.filter((m) => !m.onlineOnly);
+// a boss-eligible stage to fall back to (the preferred one if it qualifies)
+export const bossFallbackMap = (prefer) => (mapBossOk(prefer) ? prefer : (MAPS.find((m) => !m.noBoss && !m.onlineOnly) || MAPS[0]).id);
+// Why a humans-only room can't start yet (null when it can, or when the stage allows bots): lobby = { map, players }
+export function noBotsStartBlock(lobby) {
+  if (!lobby || !mapNoBots(lobby.map)) return null;
+  const ps = lobby.players || [];
+  if (ps.length < 2) return 'Needs 2+ players — no bots on this stage';
+  if (!ps.some((p) => p.team === 0) || !ps.some((p) => p.team === 1)) return 'Needs a player on each team';
+  return null;
+}
 
 export const BOT_NAMES = [
   'Squiddo', 'Blotch', 'Marlo', 'Inky Vee', 'Pip', 'Coral', 'Riptide', 'Nori', 'Suki', 'Zest',

@@ -26,11 +26,16 @@
 //   map.players[].yaw   radians on the minimap canvas: 0 = pointing up (−y), positive = clockwise.
 //   markers[].angle     radians in screen space toward the off-screen ally: 0 = right, positive = clockwise (y down).
 //   percents            accepted as 0..100 or 0..1.
+// Boss mode (docs/BOSS.md): src/ui/hud-boss.js (hud.boss) adds the boss bar / title card / callouts / damage numbers and
+// the endings; the roster slots show the 8-kid squad in squad ink. It switches on match.mode === 'boss' or boss:spawn.
 import { h, clamp, colorVars, toHex, fmtTime, fmtInt, splatSVG, splatShape, pct, shade, lerp, easeOutBack, easeOutCubic, restartAnim, prefersReducedMotion } from './ui-util.js';
 import { SQUID, SPLAT_ICON, DEATH_ICON, GLYPHS, SUB_ICONS, WEAPON_ICONS, richText, keycap, specialIcon, weaponIcon } from './ui-icons.js';
 import { WEAPONS, SPECIALS, TEAM_NAMES, SUB, PLAYER, MATCH, ZONES } from '../config.js';
 import { on, G } from '../core/ctx.js';
 import { SFX } from '../audio/audio.js';
+import { BossHud } from './hud-boss.js';
+import { installBossAudio } from '../audio/bossAudio.js';
+import { bossEmblem, BOSS_NAME, BOSS_EPITHET } from './boss-art.js';
 
 let HUD_ID = 0;
 const BUMP = { duration: 320, easing: 'cubic-bezier(.34,1.8,.64,1)' };
@@ -133,6 +138,8 @@ export class HUD {
     this._onResize = () => this._resizeCanvas();
     addEventListener('resize', this._onResize);
     this._bindBus();
+    this.boss = new BossHud(this);
+    installBossAudio();   // boss-mode sfx + music director (idle outside boss matches)
   }
 
   // ================================================================ build
@@ -356,7 +363,7 @@ export class HUD {
     if (spect !== L.spect) { L.spect = spect; this.el.classList.toggle('is-spectating', spect); }
     this._deaths = f.deaths || null;
     this._updTimer(f.time);
-    if (f.teams) this._updSquads(f.teams);
+    if (f.teams) this._updSquads(this.boss.on ? this.boss.squadTeams(f.teams) : f.teams);
     this._updCrosshair(f, dt);
     this._updTank(f, dt);
     this._updSpecial(f, dt);
@@ -369,12 +376,14 @@ export class HUD {
     this._updDamageDirs(dt);
     this._updDeaths(f.deaths);
     this._updSplatJump(f.jumpQueue);
-    this._updPrompt(f.prompt);
+    this._updPrompt(this.boss.on ? this.boss.prompt(f.prompt) : f.prompt);
     this._updFps(f.fps, dt);
     this._updZones(f.zones, dt);
+    this.boss.update(dt);
   }
 
   banner(kind = 'custom', text) {
+    if (kind === 'timesup' && this.boss.timesUp()) { this.el.classList.remove('is-live'); return; }
     const k = ['ready', 'go', 'one_minute', 'timesup', 'special', 'custom'].includes(kind) ? kind : 'custom';
     const defaults = { ready: 'READY?', go: 'GO!', one_minute: '1 minute left!', timesup: "TIME'S UP!", special: 'SPECIAL!', custom: '' };
     let label = text != null && text !== '' ? String(text) : defaults[k];
@@ -422,6 +431,7 @@ export class HUD {
   }
 
   hitMarker(kind = 'hit') {
+    this.hitEl.classList.remove('is-weak');
     const dmg = this._lastHitDmg || 36;
     this._lastHitDmg = 0;
     // consecutive hits escalate (ticks grow, fly further and warm toward your ink colour); heavy hits get fat ticks
@@ -606,6 +616,7 @@ export class HUD {
     removeEventListener('resize', this._onResize);
     cancelAnimationFrame(this._rafId);
     this._unsubs?.forEach((u) => u());
+    this.boss?.dispose();
     this.el.remove(); this.overLayer.remove();
   }
 
@@ -668,6 +679,7 @@ export class HUD {
     this.el.classList.remove('is-live');
     this._L.turfTxt = null;
     this.turfNum.textContent = '0';
+    this.boss.setMode(!!match && match.mode === 'boss', match && match.boss);
     this._lineup(match);
   }
 
@@ -766,10 +778,28 @@ export class HUD {
       colorVars(wrap, 't', col(t));
       return wrap;
     };
+    if (this.boss.on) {
+      // boss mode: the whole squad (two columns) vs HULLBREAKER
+      const squad = side(0);
+      squad.classList.add('is-squad');
+      squad.querySelector('.iw-lu__name').textContent = 'YOUR SQUAD';
+      const foe = h('div', { class: 'iw-lu__team iw-lu__team--b iw-lu__foe' },
+        h('div', { class: 'iw-lu__name iw-display' }, BOSS_NAME),
+        h('div', { class: 'iw-lu__bosscard' }, h('span', { class: 'iw-lu__bossart', html: bossEmblem() }), h('small', null, BOSS_EPITHET)));
+      colorVars(foe, 't', col(1));
+      const bel = h('div', { class: 'iw-lineup is-boss' }, squad,
+        h('div', { class: 'iw-lu__vs' }, h('span', { class: 'iw-lu__vsplat', html: splatSVG({ seed: 77, fill: '#fff', r: 56, arms: 10, drops: 6 }) }), h('span', { class: 'iw-display' }, 'VS')),
+        foe);
+      this.overLayer.appendChild(bel);
+      // out before HULLBREAKER bursts up (boss time 1.8 s) so the title card has the stage
+      setTimeout(() => bel.classList.add('is-out'), 1650);
+      setTimeout(() => bel.remove(), 2200);
+      return;
+    }
     const el = h('div', { class: 'iw-lineup' },
-      side(0),
+      side(this._myTeam()),
       h('div', { class: 'iw-lu__vs' }, h('span', { class: 'iw-lu__vsplat', html: splatSVG({ seed: 77, fill: '#fff', r: 56, arms: 10, drops: 6 }) }), h('span', { class: 'iw-display' }, 'VS')),
-      side(1));
+      side(1 - this._myTeam()));
     this.overLayer.appendChild(el);
     [0, 1, 2, 3].forEach((i) => setTimeout(() => { if (el.isConnected) this._snd('ui_hover', { volume: 0.5, pitch: 0.9 + i * 0.08 }); }, 250 + i * 90));
     setTimeout(() => el.classList.add('is-out'), 2900);
@@ -1166,7 +1196,10 @@ export class HUD {
     }
   }
 
-  _actorFor(team, i) {
+  // online you can be on Bravo: the HUD is drawn from your side (your squad left, your colour as "self")
+  _myTeam() { return G.local && G.local.team === 1 ? 1 : 0; }
+  _actorFor(side, i) {
+    const team = side ^ this._myTeam();
     const list = this._actors().filter((a) => a.team === team);
     return list[i] || null;
   }
@@ -1722,8 +1755,8 @@ export class HUD {
       const sk = `${p.isSelf ? 1 : 0}|${p.alive === false ? 0 : 1}|${p.team}|${p.tracked ? 1 : 0}`;
       if (d._sk !== sk) {
         d._sk = sk;
-        d.className = 'iw-mdot' + (p.isSelf ? ' is-self' : '') + (p.alive === false ? ' is-dead' : '') + (p.team === 1 ? ' is-enemy' : '') + (p.tracked ? ' is-tracked' : '');
-        d.style.setProperty('--c', p.team === 1 ? cb : ca);
+        d.className = 'iw-mdot' + (p.isSelf ? ' is-self' : '') + (p.alive === false ? ' is-dead' : '') + (p.team !== this._myTeam() ? ' is-enemy' : '') + (p.tracked ? ' is-tracked' : '');
+        d.style.setProperty('--c', p.team !== this._myTeam() ? cb : ca);
       }
       d.style.transform = `translate3d(${px.toFixed(1)}px,${py.toFixed(1)}px,0) rotate(${p.isSelf ? (+p.yaw || 0).toFixed(3) : 0}rad)`;
     }

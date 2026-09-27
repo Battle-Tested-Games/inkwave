@@ -686,9 +686,14 @@ class FxHooks {
     // the environment knows the real deck edges (turned slabs included): spray only where a deck meets open water
     if (G.env && typeof G.env.deckEdges === 'function') { const e = G.env.deckEdges(1.6); if (e.length) { this.edges = e; return; } }
     const rects = (G.env && G.env.footprint && G.env.footprint.length ? G.env.footprint : null) || (G.level ? [G.level.bounds] : []);
-    const inside = (x, z) => rects.some((r) => x > r.minX && x < r.maxX && z > r.minZ && z < r.maxZ);
+    // (turned slabs — env.footprint rects with aligned === false: Cargo Terminal — use their own edges, not the AABB)
+    const inR = (r, x, z) => (r.aligned !== false ? x > r.minX && x < r.maxX && z > r.minZ && z < r.maxZ
+      : Math.abs((x - r.cx) * r.ax + (z - r.cz) * r.az) < r.hx && Math.abs((z - r.cz) * r.ax - (x - r.cx) * r.az) < r.hz);
+    const inside = (x, z) => rects.some((r) => inR(r, x, z));
+    const P = (r, u, v) => [r.cx + u * r.ax - v * r.az, r.cz + u * r.az + v * r.ax];
     for (const r of rects) {
-      const sides = [
+      const q = r.aligned === false ? [P(r, -r.hx, -r.hz), P(r, r.hx, -r.hz), P(r, r.hx, r.hz), P(r, -r.hx, r.hz)] : null;
+      const sides = q ? q.map((a, i) => { const c = q[(i + 1) & 3], n = [[r.az, -r.ax], [r.ax, r.az], [-r.az, r.ax], [-r.ax, -r.az]][i]; return [a[0], a[1], c[0], c[1], n[0], n[1]]; }) : [
         [r.minX, r.minZ, r.maxX, r.minZ, 0, -1], [r.maxX, r.minZ, r.maxX, r.maxZ, 1, 0],
         [r.maxX, r.maxZ, r.minX, r.maxZ, 0, 1], [r.minX, r.maxZ, r.minX, r.minZ, -1, 0],
       ];

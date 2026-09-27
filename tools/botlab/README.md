@@ -1,6 +1,6 @@
 # Botlab — headless bot matches and page tests
 
-Runs the real game (Electron, `electron/main.js`) offscreen and muted, in isolated profiles, to measure and tune the
+Runs the real game (Electron, `electron/main.cjs`) offscreen and muted, in isolated profiles, to measure and tune the
 bots without touching a normal install. Needs `npm install` (Electron) and macOS / Linux with a GPU.
 
 ```bash

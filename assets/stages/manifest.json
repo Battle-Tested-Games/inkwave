@@ -68,5 +68,16 @@
       "src": "assets/stages/terraces-dusk.webp",
       "sm": "assets/stages/terraces-dusk-sm.webp"
     }
-  }
+  },
+  "cargo": {
+    "day": {
+      "src": "assets/stages/cargo-day.webp",
+      "sm": "assets/stages/cargo-day-sm.webp"
+    },
+    "dusk": {
+      "src": "assets/stages/cargo-dusk.webp",
+      "sm": "assets/stages/cargo-dusk-sm.webp"
+    }
+  },
+  "generated": "2026-09-27T20:11:01.803Z"
 }

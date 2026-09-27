@@ -7,7 +7,7 @@
 // Reports: stuck %, splats (by cause), per-weapon splats / deaths / turf, specials, super jumps, console errors, sim
 // cost, and in Zone Control the objective stats. Last line: RESULT_JSON {…} (also written to OUT if set).
 const { app } = require('electron');
-require(process.env.S + '/offscreen-boot.js');
+require(process.env.S + '/offscreen-boot.cjs');
 const MAP = process.env.MAP || 'halyard', MODE = process.env.MODE || 'zones', SECS = +(process.env.SECS || 180);
 const OUT = process.env.OUT || '';
 const WEAPONS = process.env.WEAPONS || '', SUBS = process.env.SUBS || '';

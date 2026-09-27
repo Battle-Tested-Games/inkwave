@@ -166,6 +166,7 @@ export class Actor {
     const special = this.special;      // the share kept through the splat (spawnAt → reset() would zero it)
     this.spawnAt(p, yaw);
     this.special = special;
+    this.netTp = (this.netTp || 0) + 1;     // online: a genuine teleport — proxies snap instead of gliding across the map
     this.grounded = false;
     this.vel.set(0, -4, 0);
     this.character.trigger('spawn');
@@ -605,7 +606,9 @@ export class Actor {
   // hopping onto a railing lands wherever the feet cover it, and standing / walking along it holds. Squids fall through
   // rails (never called for them). Overwrites the probe result `gh` when the rail top is the higher support.
   _railFeet(gh, lo, hi) {
-    const L = G.level, x = this.pos.x, z = this.pos.z, fr = PLAYER.footRadius;
+    const L = G.level;
+    if (!L.hasRails) return;
+    const x = this.pos.x, z = this.pos.z, fr = PLAYER.footRadius;
     const ids = L.queryBlocks(x - fr - 0.05, z - fr - 0.05, x + fr + 0.05, z + fr + 0.05, this._railIds || (this._railIds = []));
     let best = null, bestY = gh.hit ? gh.y + 1e-3 : -Infinity;
     for (let i = 0; i < ids.length; i++) {
@@ -969,7 +972,9 @@ export class Actor {
   _finishFrame(dt) {
     const a = this.anim;
     const isSquid = this.form === 'squid';
-    this._face(dt, isSquid);
+    // online proxies arrive already facing the owner's way (net/netmatch.js applyRemote)
+    if (this.remote) a.turnRate = this.netTurnRate || 0;
+    else this._face(dt, isSquid);
     const hs = Math.hypot(this.vel.x, this.vel.z);
     const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
     a.speed = hs;
@@ -994,7 +999,8 @@ export class Actor {
     a.hp = clamp(this.hp / PLAYER.hp, 0, 1);
     a.inEnemyInk = !!this.onEnemy;
     a.surface = this.grounded ? this.groundTeam : 0;
-    // visual step smoothing (critically damped, ~0.12 s)
+    // visual step smoothing (critically damped, ~0.12 s) — proxies already carry the owner's smoothed height
+    if (this.remote) { this.smoothY = 0; this.smoothYV = 0; }
     const w = 24;
     const acc = -w * w * this.smoothY - 2 * w * this.smoothYV;
     this.smoothYV += acc * dt; this.smoothY += this.smoothYV * dt;

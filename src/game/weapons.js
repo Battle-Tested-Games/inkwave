@@ -265,6 +265,12 @@ export class WeaponRunner {
         if (G.time - last > 0.5) { this.rollHits.set(e, G.time); G.projectiles.applyHit(a, e, w.rollDamage, 'roller'); }
       }
     }
+    // boss mode: the drum crushes into HULLBREAKER's claws / belly and flattens crablets
+    if (G.boss && hs > 1.0) {
+      const bh = G.boss.rollHit(a.pos, fx, fz, w.rollWidth);
+      const key = bh && (bh.boss ? G.boss : bh.target);
+      if (bh && G.time - (this.rollHits.get(key) || -9) > 0.5) { this.rollHits.set(key, G.time); G.boss.hit(a, w.rollDamage, bh.target, 'roller', bh.point); }
+    }
     if (moved < 0.28) return;
     this.lastRollPos.copy(a.pos);
     a.ink = Math.max(0, a.ink - w.rollInkPerMeter * moved);
@@ -836,10 +842,69 @@ export class Projectiles {
     const p = this.pool.pop() || { pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), start: new THREE.Vector3() };
     // pooled: clear the per-kind optional fields so nothing leaks from the projectile's previous life
     p.volley = null; p.belowFalloff = 0; p.belowFalloffMax = 0; p.burst = null; p.weaponId = null;
-    p.delay = 0; p.head = false; p.wid = null; p.dmgFar = undefined; p.vol = null; p.sp = undefined;
+    p.delay = 0; p.head = false; p.wid = null; p.dmgFar = undefined; p.vol = null; p.sp = undefined; p.ghost = false;
     // look (visual only; _draw falls back to size / defaults for anything left unset)
     p.vis = 0; p.tail0 = undefined; p.tailK = undefined; p.wob = undefined; p.wobF = 0; p.nose = 0; p.sats = 0;
     return p;
+  }
+
+  // every round enters the world here; online, rounds you own are recorded so the other players see them fly
+  _push(p) {
+    this.list.push(p);
+    const nm = G.netm;
+    if (nm && !p.ghost) nm.recProj(p);
+  }
+
+  // ---- online: other players' rounds, bombs and shots, replayed as visual copies (they never paint or hurt anyone —
+  // the owner's splats and hits arrive separately)
+  ghostProjectile(a, e) {
+    const [, , , type, wid, px, py, pz, vx, vy, vz, delay, life, straight, radius, size, grav, drag, trailEvery, head, vis, tail0, tailK, wob, wobF, nose, sats] = e;
+    const p = this._new();
+    Object.assign(p, { type, wid: wid || null, owner: a, team: a.team, age: 0, life, straight, radius, damage: 0, size, trail: -1.5, trailEvery, trailRadius: 0.45,
+      grav, drag, seed: Math.random(), delay, head: !!head, vis, tail0, tailK, wob, wobF, nose, sats, ghost: true });
+    p.pos.set(px, py, pz); p.prev.copy(p.pos); p.start.copy(p.pos);
+    p.vel.set(vx, vy, vz);
+    this.list.push(p);
+  }
+
+  ghostBomb(a, kind, px, py, pz, vx, vy, vz) {
+    const s = this.bombs.length;
+    if (kind === 'storm') this.throwStorm(a); else this.throwBomb(a);
+    const b = this.bombs[s];
+    if (!b) return;
+    b.ghost = true;
+    b.pos.set(px, py, pz); b.vel.set(vx, vy, vz); b.mesh.position.copy(b.pos);
+    if (b.dir) b.dir.set(vx, 0, vz).normalize();
+  }
+
+  // presentation of someone else's shot (sound + muzzle flash + charger beam); the round itself is a ghost projectile
+  ghostFire(a, e) {
+    const w = WEAPONS[e.weapon] || a.weapon;
+    const m = e.muzzle || a.pos, dir = e.dir || a.aimDir;
+    const near = a._nearCamera();
+    switch (w.kind) {
+      case 'shooter': if (near) { G.audio?.play('shoot_shooter', { pos: m, volume: 0.4 }); G.fx?.muzzle(m, dir, a.color, 'shooter'); } break;
+      case 'dualies': if (near) { G.audio?.play('shoot_dualies', { pos: m, volume: 0.36, pitch: e.hand ? 1.05 : 0.97 }); G.fx?.muzzle(m, dir, a.color, 'shooter'); } break;
+      case 'splatling': if (near) { G.audio?.play('shoot_splatling', { pos: m, volume: 0.33 }); G.fx?.muzzle(m, dir, a.color, 'shooter'); } break;
+      case 'blaster': if (near) { G.audio?.play('shoot_blaster', { pos: m, volume: 0.5 }); G.audio?.play('blaster_pump', { pos: m, volume: 0.4, delay: 0.27 }); } break;
+      case 'slosher': if (near) G.fx?.muzzle(m, dir, a.color, 'blaster'); break;
+      case 'charger': this._ghostBeam(a, m, dir, e.len || 20, e.charge || 0.5, near); break;
+    }
+  }
+
+  _ghostBeam(a, m, dir, len, charge, near) {
+    const mesh = this._beamMesh();
+    mesh.position.copy(m);
+    mesh.quaternion.setFromUnitVectors(ZAX, _v3.copy(dir).normalize());
+    const th = 0.035 + charge * 0.05;
+    mesh.scale.set(th, th, len);
+    const bu = mesh.material.uniforms;
+    bu.uColor.value.copy(a.color); mesh.material.color.copy(a.color).multiplyScalar(2.2);
+    bu.uT.value = 0; bu.uLife.value = 0.3 + 0.1 * charge; bu.uLen.value = len; bu.uCharge.value = charge; bu.uSeed.value = Math.random() * 100;
+    bu.uWidth.value = th * 2.3;
+    mesh.visible = true;
+    this.beams.push({ mesh, t: 0, life: bu.uLife.value, th });
+    if (near) G.audio?.play('shoot_charger', { pos: m, volume: 0.6, pitch: 1.08 - 0.16 * charge });
   }
 
   // pooled charger beam ribbon (stays in the scene, hidden when idle)
@@ -963,7 +1028,7 @@ export class Projectiles {
       vis: 0.1 + Math.random() * 0.012, tail0: 0.8, tailK: 1.3, wob: 0.035, wobF: 26, nose: 0.3, sats: 3 });
     p.pos.copy(m); p.prev.copy(m); p.start.copy(m);
     p.vel.copy(dir).multiplyScalar(w.projSpeed);
-    this.list.push(p);
+    this._push(p);
     if (a.isLocal || a._nearCamera()) {
       G.audio?.play('shoot_shooter', { pos: a.isLocal ? undefined : m, volume: a.isLocal ? 0.55 : 0.4 });
       G.fx?.muzzle(m, dir, a.color, 'shooter');
@@ -1001,7 +1066,7 @@ export class Projectiles {
     Object.assign(p, { type: 'shot', wid: w.id, owner: a, team: a.team, age: 0, life: 1.2, straight: w.straightTime, radius: w.impactRadius, damage: w.damage, size: 0.15, trail: -(2.5 - w.trailEvery), trailEvery: w.trailEvery, trailRadius: w.trailRadius, grav: 28, drag: 0.8, seed: Math.random() }, look);
     p.pos.copy(m); p.prev.copy(m); p.start.copy(m);
     p.vel.copy(dir).multiplyScalar(w.projSpeed);
-    this.list.push(p);
+    this._push(p);
     if (a.isLocal || a._nearCamera()) {
       G.audio?.play(snd, { pos: a.isLocal ? undefined : m, volume: a.isLocal ? sndVol : sndVol * 0.72, pitch });
       G.fx?.muzzle(m, dir, a.color, 'shooter');
@@ -1068,7 +1133,7 @@ export class Projectiles {
       // + g·dt/2 cancels the integrator's half-step drop (update() is semi-implicit Euler), so the head glob lands on
       // the analytic parabola — exactly on the crosshair point
       p.vel.set(Math.sin(yw) * cp * sp, Math.sin(pt) * sp + g * SIM_DT * 0.5, Math.cos(yw) * cp * sp);
-      this.list.push(p);
+      this._push(p);
     }
     _dir.set(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch));
     if (a.isLocal || a._nearCamera()) G.fx?.muzzle(m, _dir, a.color, 'blaster');
@@ -1089,6 +1154,8 @@ export class Projectiles {
     }
     // special objects (bubbles, tanks …) caught in the splash, like a blaster burst
     G.specials?.areaHit(at, w.splashRadius, w.splashDamage, p.team, p.owner);
+    // boss mode: one splash per throw (a direct head hit already counted)
+    if (G.boss && direct !== 'boss' && !(p.vol && p.vol.hits.includes(G.boss))) { p.vol?.hits.push(G.boss); G.boss.splash(p.owner, at, w.splashRadius + 0.3, w.splashDamage, w.splashDamage, p.wid || 'slosher'); }
     if (p.owner.isLocal || G.camera.position.distanceToSquared(at) < 26 * 26) {
       G.fx?.burst(at, UP, p.owner.color, { count: 16, speed: 4.2, size: 0.09 });
       G.fx?.ring?.(at, UP, p.owner.color, { radius: w.splashRadius, life: 0.32 });
@@ -1105,7 +1172,7 @@ export class Projectiles {
       vis: 0.2, tail0: 0.5, tailK: 0.9, wob: 0.085, wobF: 17, nose: 0.15, sats: 4 });
     p.pos.copy(m); p.prev.copy(m); p.start.copy(m);
     p.vel.copy(dir).multiplyScalar(w.projSpeed);
-    this.list.push(p);
+    this._push(p);
     if (a.isLocal || a._nearCamera()) {
       G.audio?.play('shoot_blaster', { pos: a.isLocal ? undefined : m, volume: a.isLocal ? 0.7 : 0.5 });
       // the pump rack: clacks land on the pump animation's back/front stops (character.js, +0.29 s / +0.46 s)
@@ -1154,7 +1221,7 @@ export class Projectiles {
       p.pos.set(m.x + fx * 0.6, m.y + 0.3, m.z + fz * 0.6); p.prev.copy(p.pos); p.start.copy(p.pos);
       const cu = Math.cos(up + (Math.random() - 0.5) * 0.12);
       p.vel.set(Math.sin(ang) * cu * sp, Math.sin(up) * sp, Math.cos(ang) * cu * sp);
-      this.list.push(p);
+      this._push(p);
     }
     if (a.isLocal) emit('recoil', { amount: 0.007 });
     emit('weapon:fire', { actor: a, weapon: w.id, muzzle: new THREE.Vector3(m.x + fx * 0.6, m.y + 0.3, m.z + fz * 0.6), dir: new THREE.Vector3(fx, Math.sin(up), fz).normalize() });
@@ -1181,6 +1248,12 @@ export class Projectiles {
         if (!victim || d < victim.d) victim = { e, d };
       }
     }
+    // boss mode: the beam stops on the boss (or a crablet) when that's nearer than any squidkid
+    let bossHit = false;
+    if (G.boss) {
+      const bh = G.boss.segHit(m, _v2.copy(m).addScaledVector(dir, len), 0.1);
+      if (bh && (!victim || bh.dist < victim.d)) { victim = null; len = bh.dist; bossHit = true; G.boss.hit(a, dmg, bh.target, 'charger', bh.point.clone()); }
+    }
     if (victim) { len = victim.d; this.applyHit(a, victim.e, dmg, 'charger'); }
     // paint along the line (projected to the ground)
     let area = 0;
@@ -1190,7 +1263,7 @@ export class Projectiles {
       const g = G.physics.raycast(_v2, DOWN, 3.5, _hit2, true);
       if (g.hit) area += G.paint.splat(_v3.copy(g.point).addScaledVector(g.normal, 0.1), w.lineRadius * (0.8 + charge * 0.4), a.team, { seed: Math.random(), stretch: dir, stretchAmt: 1.2 });
     }
-    if (hit.hit && !victim) {
+    if (hit.hit && !victim && !bossHit) {
       _v2.copy(hit.point).addScaledVector(hit.normal, 0.12);
       area += G.paint.splat(_v2, w.impactRadius * (0.6 + 0.4 * charge), a.team, { seed: Math.random(), stretch: dir, stretchAmt: 0.6 });
       G.fx?.burst(hit.point, hit.normal, a.color, { count: 10, speed: 4, size: 0.09, paint: false });
@@ -1198,8 +1271,8 @@ export class Projectiles {
     }
     {
       const end = new THREE.Vector3().copy(m).addScaledVector(dir, len);
-      emit('weapon:fire', { actor: a, weapon: w.id, muzzle: m.clone(), dir: dir.clone(), charge });
-      emit('weapon:impact', { pos: end, normal: hit.hit && !victim ? hit.normal.clone() : dir.clone().negate(), team: a.team, kind: 'charger', radius: w.impactRadius * (0.6 + 0.4 * charge) });
+      emit('weapon:fire', { actor: a, weapon: w.id, muzzle: m.clone(), dir: dir.clone(), charge, len });
+      emit('weapon:impact', { pos: end, normal: hit.hit && !victim && !bossHit ? hit.normal.clone() : dir.clone().negate(), team: a.team, kind: 'charger', radius: w.impactRadius * (0.6 + 0.4 * charge) });
     }
     a.addTurf(area);
     // beam visual: tracer front races out, white-hot core snaps off, the ink sheath thins and breaks into dashes
@@ -1379,6 +1452,7 @@ export class Projectiles {
     this.scene.add(group);
     const vel = this.throwVelocity(a, b.throwSpeed, new THREE.Vector3());
     this.bombs.push({ kind: 'bomb', owner: a, team: a.team, mesh: group, body, pos: pos.clone(), vel, fuse: -1, age: 0, spin: new THREE.Vector3(Math.random() * 8, Math.random() * 8, 0), beepT: 0, sp: !!a.specialActive });
+    if (G.netm && !a.remote) G.netm.recBomb(this.bombs[this.bombs.length - 1]);
     if (a.isLocal || a._nearCamera()) G.audio?.play('bomb_throw', { pos: a.isLocal ? undefined : a.pos, volume: 0.7 });
     emit('bomb:throw', { actor: a, pos: pos.clone(), team: a.team, radius: SUB.bomb.radius });
   }
@@ -1394,6 +1468,7 @@ export class Projectiles {
     this.scene.add(group);
     const vel = this.throwVelocity(a, sp.throwSpeed, new THREE.Vector3());
     this.bombs.push({ kind: 'storm', owner: a, team: a.team, mesh: group, body, pos: pos.clone(), vel, fuse: -1, age: 0, spin: new THREE.Vector3(4, 6, 0), beepT: 0, dir: new THREE.Vector3(vel.x, 0, vel.z).normalize() });
+    if (G.netm && !a.remote) G.netm.recBomb(this.bombs[this.bombs.length - 1]);
   }
 
   _explodeBomb(b) {
@@ -1421,6 +1496,7 @@ export class Projectiles {
       const k = 1 - clamp((d - 0.8) / (s.radius - 0.8), 0, 1);
       this.applyHit(b.owner, e, lerp(s.damageMin, s.damageMax, k * k), 'bomb');
     }
+    G.boss?.splash(b.owner, c, s.radius, s.damageMax, s.damageMin, 'bomb');
   }
 
   _spawnCloud(b) {
@@ -1461,7 +1537,12 @@ export class Projectiles {
   // ---- damage routing
   applyHit(attacker, victim, dmg, weaponId) {
     if (!victim.alive || victim.team === attacker.team) return;
-    const killed = victim.damage(dmg, attacker, weaponId);
+    const nm = G.netm;
+    let killed = false;
+    const route = nm ? nm.shouldApplyHit(attacker, victim) : 'local';
+    if (route === 'drop') return;
+    if (route === 'send') nm.sendHit(attacker, victim, dmg, weaponId);   // the kill confirm arrives with their splat
+    else killed = victim.damage(dmg, attacker, weaponId);
     emit('hit', { attacker, victim, damage: dmg, killed, weaponId });
     // ink smacking the body, at the body (heavier + lower for big hits); the UI tick / kill sting are main.js's
     if (G.audio && (attacker.isLocal || victim.isLocal || victim._nearCamera?.())) {
@@ -1475,11 +1556,25 @@ export class Projectiles {
   update(dt) {
     for (const k in MAIN_KITS) MAIN_KITS[k].tick?.(dt);   // kit weapons' own world objects (kits/*.js)
     const list = this.list;
+    const nm = G.netm;
     for (let i = list.length - 1; i >= 0; i--) {
       const p = list[i];
       // fired while its owner's special was running: its ink never charges the special meter (see _credit)
       if (p.sp === undefined) p.sp = !!(p.owner && p.owner.specialActive);
       if (p.delay > 0) { p.delay -= dt; if (p.delay > 0) continue; }   // poured waves: later globs leave a beat later
+      if (p.ghost && nm) nm.mute++;
+      try { if (this._step(p, dt)) { list[i] = list[list.length - 1]; list.pop(); this.pool.push(p); } }
+      finally { if (p.ghost && nm) nm.mute--; }
+    }
+    this._updateBombs(dt);
+    this._updateClouds(dt);
+    this._updateBeams(dt);
+    this._draw();
+  }
+
+  // one round, one frame; true = it's done
+  _step(p, dt) {
+    {
       p.age += dt;
       p.prev.copy(p.pos);
       if (p.age > p.straight) p.vel.y -= p.grav * dt;
@@ -1515,6 +1610,11 @@ export class Projectiles {
       if (!dead && G.subs && G.subs.blockShot(p.prev, p.pos, p.team, p.damage || 10)) dead = true;
       if (!dead && G.specials && G.specials.shotHit(p.prev, p.pos, p.team, p.damage || 10, p.owner)) dead = true;
       // world
+      // boss mode: HULLBREAKER's hit spheres and its crablets
+      if (!dead && G.boss) {
+        const bh = G.boss.segHit(p.prev, p.pos, p.size * 0.6);
+        if (bh) { this._bossImpact(p, bh); dead = true; }
+      }
       if (!dead) {
         const hit = G.physics.segment(p.prev, p.pos, _hit, true);
         if (hit.hit) {
@@ -1536,12 +1636,25 @@ export class Projectiles {
         dead = true;
       }
       if (!dead && p.pos.y < PLAYER.waterY - 1.8) dead = true;
-      if (dead) { list[i] = list[list.length - 1]; list.pop(); this.pool.push(p); }
+      return dead;
     }
-    this._updateBombs(dt);
-    this._updateClouds(dt);
-    this._updateBeams(dt);
-    this._draw();
+  }
+
+  // a blob / drop / blast connecting with the boss or a crablet (bh from boss.segHit)
+  _bossImpact(p, bh) {
+    const at = (this._bossAt || (this._bossAt = new THREE.Vector3())).copy(bh.point), target = bh.target;
+    const key = target.hp !== undefined && target.id !== undefined ? target : G.boss;   // one hit per volley per body
+    let dmg = p.damage;
+    if (p.type === 'drop') dmg = lerp(p.damage, p.dmgFar, clamp(p.start.distanceTo(at) / 7, 0, 1));
+    if (p.vol) { if (p.vol.hits.includes(key)) dmg = 0; else p.vol.hits.push(key); }
+    // a roller flick is one sheet of ink: against a body this size every drop would land, so only the first counts
+    // in full and the rest chip
+    if (p.type === 'drop') { const o = p.owner, t = o._flickBossT ?? -9; if (G.time - t < 0.3) dmg *= 0.12; else o._flickBossT = G.time; }
+    if (dmg > 0) G.boss.hit(p.owner, dmg, target, p.wid || p.type, at.clone());
+    else G.fx?.burst(at, _v2.copy(p.vel).normalize().negate(), p.owner.color, { count: 4, speed: 3, size: 0.07 });
+    if (p.type !== 'blast') emit('weapon:impact', { pos: at.clone(), normal: _v2.copy(p.vel).normalize().negate().clone(), team: p.team, kind: p.type === 'drop' || p.type === 'slosh' ? 'drop' : 'shot', radius: p.radius * 0.5, victim: null });
+    if (p.type === 'blast') this._blastBurst(p, at, 'boss');
+    if (p.type === 'slosh' && p.head) this._sloshSplash(p, at, 'boss');
   }
 
   _impact(p, hit) {
@@ -1585,6 +1698,7 @@ export class Projectiles {
       this.applyHit(p.owner, e, lerp(w.splashDamageMax, w.splashDamageMin, d / w.splashRadius), p.weaponId || 'blaster');
     }
     G.specials?.areaHit(c, w.splashRadius, w.splashDamageMin, p.team, p.owner);
+    if (direct !== 'boss') G.boss?.splash(p.owner, c, w.splashRadius, w.splashDamageMax, w.splashDamageMin, 'blaster');
   }
 
   _updateBombs(dt) {
@@ -1595,8 +1709,17 @@ export class Projectiles {
       _v.copy(b.pos);
       b.pos.addScaledVector(b.vel, dt);
       const hit = G.physics.segment(_v, b.pos, _hit);
+      // boss mode: bombs glance off HULLBREAKER's shell (they'd otherwise sail through it)
+      if (!hit.hit && G.boss && b.kind === 'bomb') {
+        const bh = G.boss.segHit(_v, b.pos, 0.2), sh = bh && bh.target.pos && bh.target;
+        if (sh) {
+          _v2.copy(b.pos).sub(sh.pos).normalize(); b.pos.copy(sh.pos).addScaledVector(_v2, sh.r + 0.22);
+          const vn = b.vel.dot(_v2); if (vn < 0) b.vel.addScaledVector(_v2, -vn * 1.35);
+          b.vel.multiplyScalar(0.55);
+        }
+      }
       if (hit.hit) {
-        if (b.kind === 'storm') { this._spawnCloud(b); this.scene.remove(b.mesh); this.bombs.splice(i, 1); continue; }
+        if (b.kind === 'storm') { this._spawnCloud(b); if (b.ghost) this.clouds[this.clouds.length - 1].ghost = true; this.scene.remove(b.mesh); this.bombs.splice(i, 1); continue; }
         b.pos.copy(hit.point).addScaledVector(hit.normal, 0.21);
         const vn = b.vel.dot(hit.normal);
         b.vel.addScaledVector(hit.normal, -vn * 1.35);
@@ -1607,7 +1730,7 @@ export class Projectiles {
           emit('bomb:arm', { actor: b.owner, pos: b.pos.clone(), team: b.team, radius: SUB.bomb.radius });
         }
       }
-      if (b.kind === 'storm' && b.age > 1.1) { this._spawnCloud(b); this.scene.remove(b.mesh); this.bombs.splice(i, 1); continue; }
+      if (b.kind === 'storm' && b.age > 1.1) { this._spawnCloud(b); if (b.ghost) this.clouds[this.clouds.length - 1].ghost = true; this.scene.remove(b.mesh); this.bombs.splice(i, 1); continue; }
       if (b.fuse >= 0) {
         b.fuse -= dt;
         b.beepT -= dt;
@@ -1618,7 +1741,7 @@ export class Projectiles {
           b.beepT = 0.3 - k * 0.2;
           if (G.camera.position.distanceToSquared(b.pos) < 30 * 30) G.audio?.play('bomb_beep', { pos: b.pos, volume: 0.35 + k * 0.4, pitch: 1 + k * 0.25 });
         }
-        if (b.fuse <= 0) { this._explodeBomb(b); this.scene.remove(b.mesh); this.bombs.splice(i, 1); continue; }
+        if (b.fuse <= 0) { const nm = G.netm; if (b.ghost && nm) nm.mute++; try { this._explodeBomb(b); } finally { if (b.ghost && nm) nm.mute--; } this.scene.remove(b.mesh); this.bombs.splice(i, 1); continue; }
       }
       if (b.pos.y < PLAYER.waterY - 1.8) { this.scene.remove(b.mesh); this.bombs.splice(i, 1); continue; }
       b.mesh.position.copy(b.pos);
@@ -1646,10 +1769,11 @@ export class Projectiles {
           const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * sp.radius;
           _v.set(c.group.position.x + Math.cos(a) * r, c.group.position.y - 0.8, c.group.position.z + Math.sin(a) * r);
           const g = G.physics.raycast(_v, DOWN, 12, _hit);
-          if (g.hit) c.owner.addTurfNoSpecial(G.paint.splat(_v2.copy(g.point).addScaledVector(g.normal, 0.1), 0.45 + Math.random() * 0.35, c.team, { seed: Math.random() }));   // (a special's rain)
+          if (g.hit && !c.ghost) c.owner.addTurfNoSpecial(G.paint.splat(_v2.copy(g.point).addScaledVector(g.normal, 0.1), 0.45 + Math.random() * 0.35, c.team, { seed: Math.random() }));   // (a special's rain)
         }
+        if (!c.ghost) G.boss?.rain(c.owner, c.group.position.x, c.group.position.z, sp.radius * s, sp.dps * dt);
         for (const e of G.actors) {
-          if (e.team === c.team || !e.alive) continue;
+          if (e.team === c.team || !e.alive || e.remote) continue;     // online: each client rains on its own actors
           const dx = e.pos.x - c.group.position.x, dz = e.pos.z - c.group.position.z;
           if (dx * dx + dz * dz > sp.radius * sp.radius || e.pos.y > c.group.position.y) continue;
           _v.copy(e.pos); _v.y += 1.2;
