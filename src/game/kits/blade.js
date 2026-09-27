@@ -503,16 +503,16 @@ function botTactics(brain, ctx) {
   if (charging) {
     // ================= holding a charge
     hold = true;
-    // (released during the pop-out the charge would be lost: the kid must be fully out of the ink)
-    const sees = ctx.visible || dist < 2.2, kid = kidOK;
+    // (released during the pop-out the charge would be lost: kidOK — the kid must be fully out of the ink)
+    const sees = ctx.visible || dist < 2.2;
     const near = full && pd < 3.4;
     const cutR = w.reach + hitR - 0.05 + (near && a.grounded && lungeSafe(a, nx, nz, w.lungeDist) ? w.lungeDist * 0.7 : 0);
     const eta = (pd - cutR) / w.moveSpeedCharging;                               // walking in with it held
-    if (full && kid && level && sees && pd <= cutR && aimOff < 0.32) {
+    if (full && kidOK && level && sees && pd <= cutR && aimOff < 0.32) {
       hold = false; mv = [nx, nz];                                                // in blade + lunge reach: cut
-    } else if (full && kid && B.dove === 0 && B.diveOK && pd > cutR + 1.4 && dist < 10 && level && lane() && walkable(brain, a, nx, nz, Math.min(dist - 1, 4))) {
+    } else if (full && kidOK && B.dove === 0 && B.diveOK && pd > cutR + 1.4 && dist < 10 && level && lane() && walkable(brain, a, nx, nz, Math.min(dist - 1, 4))) {
       B.dove = 1; B.dive = 0;                                                     // dive with the charge stored
-    } else if (full && kid && sees && dist > cutR + 0.4 && dist < w.waveRange * 0.9
+    } else if (full && kidOK && sees && dist > cutR + 0.4 && dist < w.waveRange * 0.9
       && ((exposed && dist > 4.2) || !level || (B.full > B.patience && eta > 0.5 && B.closeV < 1.5) || (a.hp < 40 && dist > 4))) {
       // poke with the wave (then rush the stripe it paints): square up first — the wave is narrow, the arc skews the aim
       B.square += dt;

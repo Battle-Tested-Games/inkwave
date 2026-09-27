@@ -12,7 +12,10 @@
 //   blockShot?(prev, pos, team, dmg) → bool   a shot segment prev→pos hits something this kit owns (e.g. a shield)
 //   jump?(runner, intent) → bool       claim this frame's jump press (actor.js; e.g. the mitts' leap). runner.kit.hang
 //                                      (set by the kit) holds the kid in place (wall cling)
-//   bot?: { fight?(brain, ctx) → bool fire, paint?(brain, ctx) → bool fire, paintPitch?, melee?, charges?, long?, painter? }
+//   bot?: { fight?(brain, ctx) → bool fire, paint?(brain, ctx) → bool fire, paintPitch?, melee?, charges?, long?, painter?,
+//           tactics?(brain, ctx)      every fight / retreat frame after the dodge block: owns fire, hold, swim and move
+//           stayIn?(brain, ctx) → bool   veto the low-HP retreat (keep fighting when the kill is close)
+//           targetBias?(brain, enemy) → number   added to that enemy's target score in _perceive }
 //   shields?(out) → out                push a descriptor for every shield up this frame (bots.js flanks held ones and
 //                                      steers round launched ones). Stable per shield; getters read live state:
 //                                      { kind, held, team, owner, C (disc centre), N (facing / launched: travel dir), R,

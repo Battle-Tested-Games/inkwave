@@ -53,6 +53,7 @@ export const THREAT_AI = { enabled: true };
 export const THREAT_STATS = { noticed: 0, shoot: 0, evade: 0, swim: 0, sidestep: 0, gone: 0, steer: 0, breakWall: 0, flank: 0, holdFire: 0, shieldSub: 0 };
 const _thrList = [];
 const _thrAim = { yaw: 0, pitch: 0, dist: 6 };
+const _evP = new THREE.Vector3();
 const _wander = (x) => Math.sin(x) * 0.6 + Math.sin(x * 2.27 + 1.3) * 0.4;
 const _plans = new WeakMap();
 export function zonePlan() {
@@ -307,12 +308,13 @@ export class BotBrain {
     this.thrLos = false; this.thrLosT = 0; this.thrAct = null; this.thrActs = 0; this.thrFiring = false; this.thrPulse = false;
     this.thrEvT = 0; this.thrEvYaw = 0; this.thrSide = 0; this.thrAcqT = 9; this.thrSignY = 0; this.thrSignP = 0;
     this.canRef = null; this.canSide = 0; this.canT = 0; this.flankSide = 0; this.blockT = 0; this.flankT = 0;
+    this.navBack = null; this.navBackT = 0;   // off-graph recovery (_backOnNav)
   }
 
   update(dt) {
     const a = this.a;
     const it = a.intent;
-    if (!a.alive) { it.move.set(0, 0, 0); it.fire = it.squid = it.sub = it.jump = it.special = false; this.path = null; this.target = null; this._wasDead = true; this.mvMag = 0; return; }
+    if (!a.alive) { it.move.set(0, 0, 0); it.fire = it.squid = it.sub = it.jump = it.special = false; this.path = null; this.target = null; this._wasDead = true; this.mvMag = 0; this.navBack = null; this.navBackT = 0; return; }
     if (this._wasDead && G.match && G.match.playing()) {
       // just respawned: face the way the body faces, then sometimes super jump to the teammate furthest up the field
       this._wasDead = false;
@@ -405,6 +407,7 @@ export class BotBrain {
     // ---------------- steering along the path
     const move = this._steer(dt);
     this._unstick(dt, move);
+    if (!this.path && this.wiggleT <= 0) this._backOnNav(dt, move);
     const wantMove = move.lengthSq() > 0.01;
 
     // ---------------- actions
@@ -1449,6 +1452,7 @@ export class BotBrain {
     let best = base, bs = -Infinity;
     for (const off of [0, 0.5, -0.5, 1.0, -1.0, 1.5, -1.5, 2.1, -2.1]) {
       const yw = base + off, sx = Math.sin(yw), sz = Math.cos(yw), px = x0 + sx * 3.2, pz = z0 + sz * 3.2;
+      if (G.nav.nearest(_evP.set(px, y0, pz), 1.0) < 0) continue;   // never run off the walkable graph (no way back)
       if (!this._dryLine(x0, y0, z0, px, pz) || !this._fatLos(x0, y0, z0, px, y0, pz)) continue;
       let sc = Math.cos(off) * (d.ground ? 2 : 1) + (d.ground ? 0 : Math.abs(Math.sin(off)) * 1.2);
       const st = G.paint.regionStats(px, y0, pz, 1.3, a.team, _stats);
@@ -1732,6 +1736,31 @@ export class BotBrain {
       move.set(Math.sin(this.wiggleYaw), 0, Math.cos(this.wiggleYaw));
       this.noProg = 0; this.bestD = Infinity; // the escape isn't "no progress" toward the waypoint
     }
+  }
+
+  // No route, and no nav graph under us (dodged, shoved or dropped somewhere the graph doesn't reach — every re-plan
+  // fails from there, so nothing else would ever move us): walk to the nearest graph node in sight, then plan again
+  _backOnNav(dt, move) {
+    const a = this.a, N = G.nav;
+    if (!N || !a.grounded || a.climbing || a.superJumpState) { this.navBack = null; return; }
+    this.navBackT = (this.navBackT || 0) - dt;
+    if (this.navBackT <= 0) {
+      this.navBackT = 0.6; this.navBack = null;
+      if (N.nearest(a.pos, 1.2, true) >= 0) return;                  // on the graph: the normal re-plan works
+      const cands = [];
+      for (const id of N.validIds) {
+        const q = N.nodes[id], d2 = (q.x - a.pos.x) ** 2 + (q.z - a.pos.z) ** 2;
+        if (d2 < 100 && Math.abs(q.y - a.pos.y) < 1.2 && !q.wet) cands.push([d2, q]);
+      }
+      cands.sort((x, y) => x[0] - y[0]);
+      for (let k = 0; k < Math.min(12, cands.length); k++) {
+        const q = cands[k][1];
+        if (this._dryLine(a.pos.x, a.pos.y, a.pos.z, q.x, q.z) && this._fatLos(a.pos.x, a.pos.y, a.pos.z, q.x, q.y, q.z)) { this.navBack = q; break; }
+      }
+      if (!this.navBack && cands.length) this.navBack = cands[0][1];
+    }
+    const q = this.navBack;
+    if (q) { const dx = q.x - a.pos.x, dz = q.z - a.pos.z, l = Math.hypot(dx, dz); if (l > 0.3) move.set(dx / l, 0, dz / l); }
   }
 
   _pathRemaining() {
