@@ -219,6 +219,10 @@ per: (() => { const A = m.actors, n = A.length || 1; const turf = A.reduce((s, a
         frameErr, eps: eps.sort((a, b) => b.dur - a.dur).slice(0, 6), holdPct: +(100 * holdS / Math.max(1, samples * 0.25)).toFixed(1),
         roles: Object.fromEntries(Object.entries(roleS).map(([k, v]) => [k, +(100 * v / Math.max(1, samples * 0.25)).toFixed(0)])),
         track: trk ? trk.done() : undefined,
+        // Boss Battle: HULLBREAKER's HP left and the squad's damage to it by weapon
+        boss: m.boss ? { hpFrac: +(m.boss.hp / Math.max(1, m.boss.maxHp)).toFixed(3), maxHp: Math.round(m.boss.maxHp), dead: !!m.boss.dead, phase: m.boss.phase,
+          dmgByWeapon: m.actors.reduce((o, a) => { if (a.stats.bossDmg) o[a.weaponId] = Math.round((o[a.weaponId] || 0) + a.stats.bossDmg); return o; }, {}),
+          downs: m.events.filter((e) => e.victim && e.victim.team === 0).length, result: m.result && m.result.mode === 'boss' ? { winner: m.result.winner } : null } : undefined,
       };
       if (Z) Object.assign(res, {
         held: held.map((h) => +h.toFixed(1)), neutral: +neutral.toFixed(1), captures: flips, controlEvents: ev.control.length,
@@ -244,7 +248,8 @@ per: (() => { const A = m.actors, n = A.length || 1; const turf = A.reduce((s, a
       console.log(`   teams: A [${r.teams[0]}] ${r.whereT[0]} | B [${r.teams[1]}] ${r.whereT[1]}`);
       console.log(`   bot-time: ${JSON.stringify(r.where)} (far by mode ${JSON.stringify(r.farMode)}) | specials ready ${r.ready}`);
       console.log(`   bots in the active zone ${r.zonePct}% of the time | avg inside A ${r.insideAvg[0]} B ${r.insideAvg[1]} | within 12 m A ${r.nearAvg[0]} B ${r.nearAvg[1]}`);
-    } else console.log(`== ${MAP} [turf ${SECS}s]: turf ${r.cov.join('% vs ')}%`);
+    } else if (r.boss) console.log(`== ${MAP} [boss ${SECS}s]: HULLBREAKER ${r.boss.dead ? 'SUNK' : Math.round(r.boss.hpFrac * 100) + '% HP left'} (max ${r.boss.maxHp}, phase ${r.boss.phase}) | squad downs ${r.boss.downs} | damage by weapon ${JSON.stringify(r.boss.dmgByWeapon)}`);
+    else console.log(`== ${MAP} [turf ${SECS}s]: turf ${r.cov.join('% vs ')}%`);
     console.log(`   roles (% of bot-time) ${JSON.stringify(r.roles)} | holding on purpose ${r.holdPct}%`);
     console.log(`   per bot: turf ${r.per.turf}p, on-zone ink ${r.per.zoneTurf}p, splats ${r.per.splats} → XP beyond the win/lose base ≈ ${r.per.xpVar}`);
     console.log(`   stuck ${r.stuckPct}% | splats ${r.splats} (water ${r.water}) | specials ${r.specials} | super jumps ${r.jumps} | turf ${r.cov.join('/')} | sim ${r.simT}s in ${(r.simMs / 1000).toFixed(0)}s (wall ${wallS}s) | ${JSON.stringify(perf)}`);
