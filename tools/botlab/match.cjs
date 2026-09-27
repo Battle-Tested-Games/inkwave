@@ -11,7 +11,7 @@ require(process.env.S + '/offscreen-boot.js');
 const MAP = process.env.MAP || 'halyard', MODE = process.env.MODE || 'zones', SECS = +(process.env.SECS || 180);
 const OUT = process.env.OUT || '';
 const WEAPONS = process.env.WEAPONS || '', SUBS = process.env.SUBS || '';
-setTimeout(() => { console.log('WATCHDOG'); app.exit(1); }, +(process.env.WATCHDOG || 900000));
+setTimeout(() => { console.log('WATCHDOG'); app.exit(1); setTimeout(() => process.exit(1), 3000); }, +(process.env.WATCHDOG || 900000));   // (hard exit if a hung page blocks quitting)
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 let claimed = false;
 app.on('browser-window-created', (_, win) => {

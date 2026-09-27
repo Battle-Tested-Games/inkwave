@@ -5,7 +5,7 @@
 const { app, BrowserWindow } = require('electron');
 const fs = require('fs');
 require(process.env.S + '/offscreen-boot.js');
-setTimeout(() => { console.log('WATCHDOG'); app.exit(1); }, +(process.env.WATCHDOG || 600000));
+setTimeout(() => { console.log('WATCHDOG'); app.exit(1); setTimeout(() => process.exit(1), 3000); }, +(process.env.WATCHDOG || 600000));   // (hard exit if a hung page blocks quitting)
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const MAP = process.env.MAP || 'halyard', MODE = process.env.MODE || 'turf';
 let claimed = false; app.on('browser-window-created', (_, win) => { if (claimed) return; claimed = true;
