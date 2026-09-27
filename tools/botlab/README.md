@@ -19,6 +19,12 @@ MAP=testbox PAGE=path/to/test-page.js tools/botlab/run.sh tools/botlab/page.cjs
   - `MAP` (stage id), `MODE` (`turf` / `zones`), `SECS` (turf length)
   - `WEAPONS` / `SUBS`: `all=<id>`, `team0=<id>;team1=<id>`, or a comma list per slot (team 0 first)
   - `OUT` (write the result JSON), `WATCHDOG` (ms)
+  - `TRACK=<weapon>` (+ `TRACK_TEAM=0|1`): a closer look at the players on that weapon — damage dealt / taken and from
+    how far, what they were doing when splatted, deaths without touching the killer, nearest-enemy distance; the Sponge
+    Mitts add fist / splash / leap damage and leap outcomes (`RESULT_JSON.track`)
+  - `TUNE='mitts.punchInterval=0.12,mitts.fistRange=4.6'`: what-if tuning for this run only (patched into the live
+    `WEAPONS` / `SUBS` config; nothing in the repo changes)
+  - keep `SLOTS` at 4 or less for full Zone Control matches: 8 at once crashed the GPU process on a 16 GB Mac
 - **match.cjs output:**
   - stuck % and the longest stuck episodes
   - splats by cause
