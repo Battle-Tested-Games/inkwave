@@ -16,13 +16,14 @@ import * as THREE from 'three';
 import { G, emit, clamp, lerp, angleDiff } from '../../core/ctx.js';
 import { WEAPONS, PLAYER } from '../../config.js';
 import { Physics, Hit } from '../physics.js';
-import { MAIN_KITS } from './registry.js';
+import { MAIN_KITS, netRec } from './registry.js';
 import { CHARGES, LONG } from '../bots.js';
 import './bow-model.js';
 import './bow-sfx.js';
 
 const W = WEAPONS.bow;
 const DEG = Math.PI / 180;
+const r2 = (x) => Math.round(x * 100) / 100, r3 = (x) => Math.round(x * 1000) / 1000;
 const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0), ZAX = new THREE.Vector3(0, 0, 1);
 const MAX = 192;             // arrows alive at once (flying + lodged)
 const ARROW_R = 0.11;        // added to the victim's capsule radius (a thin shaft, a fair hitbox)
@@ -78,11 +79,23 @@ export function looseVolley(a, c) {
   // fan axis: on the ground the arrows spread about the vertical (a flat fan); in the air about the aim's horizontal
   // right axis (an upright fan)
   const air = !a.grounded;
-  if (air) { _ax.crossVectors(dir, UP); if (_ax.lengthSq() < 1e-4) _ax.set(1, 0, 0); _ax.normalize(); } else _ax.copy(UP);
   // bots: nudge the fan's centre toward a second foe beside the target, so the fan spans both
   const k = a.weaponRunner && kitOf(a.weaponRunner);
   if (k && k.botYaw && !air) { dir.applyAxisAngle(UP, k.botYaw); k.botYaw = 0; STATS.grouped++; }
   if (k) k.botYaw = 0;
+  volley(a, S, m, dir, air);
+  // online: the other players' screens loose the same volley (visual arrows; the owner's hits + splats arrive apart)
+  netRec(a, 'bow', [r2(m.x), r2(m.y), r2(m.z), r3(dir.x), r3(dir.y), r3(dir.z), r3(c), air ? 1 : 0]);
+  if (a.isLocal) emit('recoil', { amount: 0.004 + 0.004 * S.tier });
+  emit('weapon:fire', { actor: a, weapon: W.id, muzzle: m.clone(), dir: dir.clone(), charge: c });
+  rumble(a, 0.1 + 0.15 * S.tier, 0.18 + 0.12 * S.tier, 70 + 30 * S.tier);
+  return S;
+}
+
+// the three arrows of a volley from m along dir (the fan: about the vertical on the ground, about the aim's right axis
+// in the air). ghost: a remote player's volley (online) — the arrows fly, lodge and burst for the eye only
+function volley(a, S, m, dir, air, ghost = false) {
+  if (air) { _ax.crossVectors(dir, UP); if (_ax.lengthSq() < 1e-4) _ax.set(1, 0, 0); _ax.normalize(); } else _ax.copy(UP);
   const col = G.teamColors[a.team];
   for (let i = -1; i <= 1; i++) {
     if (arrows.length >= MAX) kill(0);
@@ -90,19 +103,20 @@ export function looseVolley(a, c) {
     const d = _v2.copy(dir); if (i) d.applyAxisAngle(_ax, i * S.fan * DEG);
     p.pos.copy(m); p.prev.copy(m); p.vel.copy(d).multiplyScalar(S.speed); p.dir.copy(d); p.fdir.copy(d);
     Object.assign(p, { owner: a, team: a.team, st: 0, age: 0, dist: 0, t: 0, range: S.range, speed: S.speed, tier: S.tier, dmg: i ? S.side : S.dmg, lodge: S.lodge, fuse: S.fuse,
-      br: S.br, bd: S.bd, be: S.be, bp: S.bp, trail: -1.8, seed: Math.random(), noHit: false, ticks: 0, spawnT: G.time, center: i === 0 });
+      br: S.br, bd: S.bd, be: S.be, bp: S.bp, trail: -1.8, seed: Math.random(), noHit: false, ticks: 0, spawnT: G.time, center: i === 0, ghost });
     arrows.push(p);
   }
-  const loud = a.isLocal || a._nearCamera?.();
-  if (loud) {
+  if (a.isLocal || a._nearCamera?.()) {
     G.audio?.play('bow_loose', { pos: a.isLocal ? undefined : m, volume: a.isLocal ? 0.75 : 0.55, pitch: 1.12 - 0.12 * S.tier });
     G.fx?.muzzle?.(m, dir, col, S.tier === 2 ? 'charger' : 'shooter');
   }
-  if (a.isLocal) emit('recoil', { amount: 0.004 + 0.004 * S.tier });
-  emit('weapon:fire', { actor: a, weapon: W.id, muzzle: m.clone(), dir: dir.clone(), charge: c });
-  rumble(a, 0.1 + 0.15 * S.tier, 0.18 + 0.12 * S.tier, 70 + 30 * S.tier);
-  return S;
 }
+function ghost(a, d) {
+  if (!Array.isArray(d)) return;
+  const S = bowShot(d[6]);
+  volley(a, S, _gm.set(d[0], d[1], d[2]), _gd.set(d[3], d[4], d[5]).normalize(), !!d[7], true);
+}
+const _gm = new THREE.Vector3(), _gd = new THREE.Vector3();
 
 // stick arrow p into a surface at `point` (normal n); `d` = the direction it sinks in
 function lodge(p, point, n, d) {
@@ -128,6 +142,7 @@ function burst(p) {
     area += G.paint.splat(_v, p.bp * 0.45, p.team, { seed: p.seed + i });
   }
   credit(owner, area);
+  if (p.ghost) { burstFx(p, c, col, owner); return; }
   const inner = W.burstInner;
   for (const e of G.actors) {
     if (e.team === p.team || !e.alive) continue;
@@ -143,6 +158,9 @@ function burst(p) {
   }
   G.subs?.damageArea(c, p.br, p.be, p.team);
   G.boss?.splash(owner, c, p.br, p.bd, p.be, W.id);   // Boss Battle
+  burstFx(p, c, col, owner);
+}
+function burstFx(p, c, col, owner) {
   const loud = owner.isLocal || near(c, 34);
   if (loud) {
     G.fx?.explosion(c, col, p.br * (p.tier === 2 ? 0.7 : 0.55));
@@ -184,7 +202,7 @@ function stepArrow(p, i, dt) {
       Physics.segmentCapsuleDist(p.prev, p.pos, hitBase(e), hr, h, _res);
       if (_res.dist < hr * 0.95 + ARROW_R) {
         _v.copy(p.prev).lerp(p.pos, _res.t);
-        G.projectiles.applyHit(p.owner, e, p.dmg, W.id);
+        if (!p.ghost) G.projectiles.applyHit(p.owner, e, p.dmg, W.id);
         G.fx?.burst(_v, _v3.copy(p.dir).negate(), G.teamColors[p.team], { count: 6, speed: 3, size: 0.07 });
         emit('weapon:impact', { pos: _v.clone(), normal: _v3.clone(), team: p.team, kind: 'shot', radius: 0.3, victim: e });
         if (!p.lodge) { kill(i); return; }
@@ -205,7 +223,8 @@ function stepArrow(p, i, dt) {
     }
   }
   // enemy devices (curtains, sprinklers …) and special objects (bubbles) catch arrows; lodging ones stick in them
-  const blocked = !p.noHit && ((G.subs && G.subs.blockShot(p.prev, p.pos, p.team, p.dmg)) || (G.specials && G.specials.shotHit(p.prev, p.pos, p.team, p.dmg, p.owner)));
+  const bd = p.ghost ? 0 : p.dmg;   // (a ghost arrow's blow costs a device nothing)
+  const blocked = !p.noHit && ((G.subs && G.subs.blockShot(p.prev, p.pos, p.team, bd)) || (G.specials && G.specials.shotHit(p.prev, p.pos, p.team, bd, p.owner)));
   if (blocked) {
     if (p.lodge) lodge(p, p.pos, _v.copy(p.dir).negate(), p.dir); else kill(i);
     return;
@@ -476,6 +495,7 @@ LONG.bow = true;
 // ---------------------------------------------------------------------------------------------- registration
 MAIN_KITS.bow = {
   update,
+  ghost,
   reset(runner) { runner.kit = null; },
   moveSpeed(runner, w) {
     if (runner.charging) return lerp(PLAYER.runSpeed * 0.75, w.moveSpeedDrawing, Math.min(1, runner.charge * 2.5));
@@ -484,7 +504,12 @@ MAIN_KITS.bow = {
   },
   spreadDeg() { return 0; },
   tick(dt) {
-    for (let i = arrows.length - 1; i >= 0; i--) stepArrow(arrows[i], i, dt);
+    const nm = G.netm;
+    for (let i = arrows.length - 1; i >= 0; i--) {
+      const p = arrows[i], g = p.ghost && nm;   // (a ghost arrow's splats are its owner's to send)
+      if (g) nm.mute++;
+      try { stepArrow(p, i, dt); } finally { if (g) nm.mute--; }
+    }
     // a draw left hanging (a special took over the trigger mid-draw, so the runner stopped updating): let it go quietly
     for (const a of G.actors) {
       const r = a.weaponRunner;

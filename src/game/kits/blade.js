@@ -12,8 +12,8 @@
 // a charge held. World objects (waves, arc trails) are module-owned (tick / clear).
 import * as THREE from 'three';
 import { G, emit, clamp, lerp, angleDiff } from '../../core/ctx.js';
-import { PLAYER, weaponRange } from '../../config.js';
-import { MAIN_KITS } from './registry.js';
+import { PLAYER, WEAPONS, weaponRange } from '../../config.js';
+import { MAIN_KITS, netRec } from './registry.js';
 import { MELEE } from '../bots.js';
 import { registerWeaponModel } from '../character-weapons.js';
 import { Hit } from '../physics.js';
@@ -163,7 +163,7 @@ function fireDrops(a, w, S) {
     const tx = -oz * side, tz = ox * side;
     const hx = ox + tx * 0.12, hz = oz + tz * 0.12, hl = Math.hypot(hx, hz);
     p.vel.set((hx / hl) * cu * sp, Math.sin(up) * sp, (hz / hl) * cu * sp);
-    P.list.push(p);
+    P._push(p);
   }
   // a fine spray off the edge (FX only)
   if (G.fx && heard(a)) {
@@ -243,6 +243,7 @@ function melee(a, w, S) {
 
 // ------------------------------------------------------------------------------------------ the ink wave
 const WAVES = [];
+const r2 = (x) => Math.round(x * 100) / 100, r3 = (x) => Math.round(x * 1000) / 1000;
 function spawnWave(a, w, S) {
   const pitch = Math.abs(S.pitch) < 0.3 ? S.pitch * 0.4 : clamp(S.pitch, -0.45, 0.35);
   const cp = Math.cos(pitch);
@@ -250,12 +251,24 @@ function spawnWave(a, w, S) {
   const pos = new THREE.Vector3(a.pos.x + Math.sin(S.yaw) * 0.55, a.pos.y + w.waveHeight * 0.52, a.pos.z + Math.cos(S.yaw) * 0.55);
   // starting inside a wall (hugging cover): the wave is born where the wall is and bursts there
   _v.set(a.pos.x, pos.y, a.pos.z);
-  const col = (G.teamColors[a.team] || a.color).clone();
-  const W = { owner: a, team: a.team, pos, prev: pos.clone(), dir, dist: 0, t: 0, hits: new Set(), paintAcc: 0.3, dying: -1, sp: S.sp, col, fx: BladeFX.waveMesh(col), w };
-  if (!G.physics.los(_v, pos)) { W.pos.copy(_v); W.prev.copy(_v); }
-  WAVES.push(W);
+  if (!G.physics.los(_v, pos)) pos.copy(_v);
+  addWave(a, w, pos, dir, S.sp, false);
+  netRec(a, 'blade', [r2(pos.x), r2(pos.y), r2(pos.z), r3(dir.x), r3(dir.y), r3(dir.z)]);
   emit('weapon:fire', { actor: a, weapon: w.id, cut: 'charged', muzzle: pos.clone(), dir: dir.clone() });
 }
+// ghost: a remote player's wave (online) — it rolls, cuts and bursts for the eye only (the owner's hits + splats arrive
+// apart)
+function addWave(a, w, pos, dir, sp, ghost) {
+  const col = (G.teamColors[a.team] || a.color).clone();
+  const W = { owner: a, team: a.team, pos: pos.clone(), prev: pos.clone(), dir: dir.clone(), dist: 0, t: 0, hits: new Set(), paintAcc: 0.3, dying: -1, sp, col, fx: BladeFX.waveMesh(col), w, ghost };
+  WAVES.push(W);
+  if (ghost && a._nearCamera?.()) G.audio?.play('blade_heavy', { pos, volume: 0.5 });   // (the remote cut's sound)
+}
+function ghost(a, d) {
+  if (!Array.isArray(d)) return;
+  addWave(a, WEAPONS.blade, _gp.set(d[0], d[1], d[2]), _gd.set(d[3], d[4], d[5]).normalize(), false, true);
+}
+const _gp = new THREE.Vector3(), _gd = new THREE.Vector3();
 function endWave(W, at, normal) {
   W.dying = 0.14;
   const col = W.col;
@@ -281,15 +294,23 @@ function endWave(W, at, normal) {
   }
 }
 function updateWaves(dt) {
+  const nm = G.netm;
   for (let i = WAVES.length - 1; i >= 0; i--) {
-    const W = WAVES[i], w = W.w;
+    const W = WAVES[i], g = W.ghost && nm;   // (a ghost wave's splats are its owner's to send)
+    if (g) nm.mute++;
+    try { stepWave(W, i, dt); } finally { if (g) nm.mute--; }
+  }
+}
+function stepWave(W, i, dt) {
+  {
+    const w = W.w;
     W.t += dt;
     if (W.dying >= 0) {
       W.dying -= dt;
       if (W.fx) W.fx.mesh.material.uniforms.uFade.value = Math.max(0, W.dying / 0.14);
       if (W.dying <= 0) { BladeFX.freeWave(W.fx); WAVES.splice(i, 1); }
       else placeWave(W);
-      continue;
+      return;
     }
     const step = w.waveSpeed * dt;
     W.prev.copy(W.pos);
@@ -309,7 +330,7 @@ function updateWaves(dt) {
       const y0 = e.pos.y + (e.smoothY || 0);
       if (y0 + h < cy - w.waveHeight * 0.55 || y0 > cy + w.waveHeight * 0.45) continue;
       W.hits.add(e);
-      G.projectiles.applyHit(W.owner, e, dmg, 'blade');
+      if (!W.ghost) G.projectiles.applyHit(W.owner, e, dmg, 'blade');
       if (G.camera && G.camera.position.distanceToSquared(e.pos) < 30 * 30) {
         _v.set(e.pos.x, y0 + Math.min(h * 0.6, 0.9), e.pos.z);
         G.fx?.burst(_v, _v2.copy(W.dir).negate(), W.col, { count: 12, speed: 4.5, size: 0.09 });
@@ -322,7 +343,8 @@ function updateWaves(dt) {
     }
     // shields, curtains, devices and bubbles catch it; walls break it
     let stop = false;
-    if (G.subs?.blockShot(W.prev, W.pos, W.team, dmg) || G.specials?.shotHit(W.prev, W.pos, W.team, dmg, W.owner)) { endWave(W, W.pos.clone(), _n.copy(W.dir).negate()); stop = true; }
+    const bd = W.ghost ? 0 : dmg;
+    if (G.subs?.blockShot(W.prev, W.pos, W.team, bd) || G.specials?.shotHit(W.prev, W.pos, W.team, bd, W.owner)) { endWave(W, W.pos.clone(), _n.copy(W.dir).negate()); stop = true; }
     if (!stop) {
       const hit = G.physics.segment(W.prev, W.pos, _hit, true);
       if (hit.hit) { W.pos.copy(hit.point); endWave(W, hit.point, hit.normal); stop = true; }
@@ -598,6 +620,7 @@ function botTactics(brain, ctx) {
 
 // ------------------------------------------------------------------------------------------ the kit
 MAIN_KITS.blade = {
+  ghost,
   update(R, dt, inp, w) {
     const a = R.a, K = st(R);
     if (G.time - K.lastT > 0.3) { cancelCharge(R, K); K.held = false; K.swing = null; K.lunge = 0; K.queued = 0; }   // resumed after a special took the trigger

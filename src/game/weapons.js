@@ -1199,7 +1199,7 @@ export class Projectiles {
     const blast = o.type === 'blast';
     const size = o.size ?? (blast ? 0.26 : 0.14);
     Object.assign(p, {
-      type: blast ? 'blast' : 'shot', owner: a, team: a.team, age: 0, life: (o.range || 20) / o.speed + (blast ? 0 : 0.6), straight: o.straight ?? (blast ? 99 : 0.15),
+      type: blast ? 'blast' : 'shot', owner: a, team: a.team, age: 0, life: o.life ?? ((o.range || 20) / o.speed + (blast ? 0 : 0.6)), straight: o.straight ?? (blast ? 99 : 0.15),
       radius: o.radius ?? 0.8, damage: o.damage, size, trail: -1.5, trailEvery: o.trailEvery ?? 1.2, trailRadius: o.trailRadius ?? 0.42,
       grav: o.grav ?? (blast ? 0 : 28), drag: o.drag ?? (blast ? 0 : 0.8), seed: Math.random(), burst: o.burst || null, weaponId: o.weaponId || null,
     }, blast
@@ -1207,7 +1207,7 @@ export class Projectiles {
       : { vis: size * 0.68, tail0: 0.8, tailK: 1.3, wob: 0.035, wobF: 26, nose: 0.3, sats: 2 }, o.look || null);
     p.pos.copy(from); p.prev.copy(from); p.start.copy(from);
     p.vel.copy(dir).normalize().multiplyScalar(o.speed);
-    this.list.push(p);
+    this._push(p);
     return p;
   }
 
@@ -1322,7 +1322,7 @@ export class Projectiles {
         vis: size * 0.86, tail0: 0.7, tailK: 1.5, wob: 0.12, wobF: 15, nose: 0.1, sats: i < 2 ? 2 : 1 });
       p.pos.copy(m).addScaledVector(dir, -i * 0.12); p.prev.copy(p.pos); p.start.copy(p.pos);
       p.vel.set(Math.sin(yaw) * cp * sp, Math.sin(pi) * sp, Math.cos(yaw) * cp * sp);
-      this.list.push(p);
+      this._push(p);
     }
     if (a.isLocal || a._nearCamera()) G.audio?.play('bomb_throw', { pos: a.isLocal ? undefined : m, volume: a.isLocal ? 0.7 : 0.5, pitch: 0.8 });
     if (a.isLocal) emit('recoil', { amount: 0.008 });
@@ -1341,7 +1341,7 @@ export class Projectiles {
     Object.assign(p, { type: 'shot', owner: a, team: a.team, age: 0, life: 1.3, straight, radius: w.impactRadius, damage: w.damage, size: 0.12, trail: -(2.2 - w.trailEvery), trailEvery: w.trailEvery, trailRadius: w.trailRadius, grav: 28, drag: 0.8, seed: Math.random() }, LOOK_SPIN);
     p.pos.copy(m); p.prev.copy(m); p.start.copy(m);
     p.vel.copy(dir).multiplyScalar(speed);
-    this.list.push(p);
+    this._push(p);
     const wr = a.weaponRunner;
     if ((a.isLocal || a._nearCamera()) && (wr._streamN = (wr._streamN || 0) + 1) % 2 === 0) {
       G.audio?.play('shoot_shooter', { pos: a.isLocal ? undefined : m, volume: a.isLocal ? 0.4 : 0.28, pitch: 1.35 });
@@ -1380,7 +1380,7 @@ export class Projectiles {
     Object.assign(p, { type: 'shot', owner: a, team: a.team, age: 0, life: 1.2, straight, radius: w.impactRadius, damage: w.damage, size: 0.13, trail: -(2.4 - w.trailEvery), trailEvery: w.trailEvery, trailRadius: w.trailRadius, grav: 28, drag: 0.8, seed: Math.random() }, side ? LOOK_TWIN : LOOK_TWIN_PLANT);
     p.pos.copy(m); p.prev.copy(m); p.start.copy(m);
     p.vel.copy(dir).multiplyScalar(speed);
-    this.list.push(p);
+    this._push(p);
     if (a.isLocal || a._nearCamera()) {
       G.audio?.play('shoot_shooter', { pos: a.isLocal ? undefined : m, volume: a.isLocal ? 0.45 : 0.32, pitch: 1.12 + Math.random() * 0.06 });
       G.fx?.muzzle(m, dir, a.color, 'shooter');
@@ -1409,7 +1409,7 @@ export class Projectiles {
       const hx = ox * 0.8 + tx * 0.45 + fx * 0.25, hz = oz * 0.8 + tz * 0.45 + fz * 0.25, hl = Math.hypot(hx, hz);
       const cu = Math.cos(up + (Math.random() - 0.5) * 0.08);
       p.vel.set((hx / hl) * cu * sp, Math.sin(up) * sp, (hz / hl) * cu * sp);
-      this.list.push(p);
+      this._push(p);
     }
     emit('weapon:fire', { actor: a, weapon: w.id, muzzle: new THREE.Vector3(a.pos.x + fx * 0.85, a.pos.y + 0.45, a.pos.z + fz * 0.85), dir: new THREE.Vector3(fx, Math.sin(up), fz).normalize() });
     rumble(a, 0.08, 0.14, 50);
@@ -1424,7 +1424,7 @@ export class Projectiles {
     if (o.weaponId) p.weaponId = o.weaponId;   // what the hit is credited to (the splat screen): e.g. 'sprinkler'
     p.pos.copy(pos); p.prev.copy(pos); p.start.copy(pos);
     p.vel.set(vx, vy, vz);
-    this.list.push(p);
+    this._push(p);
   }
 
   // ---- bombs

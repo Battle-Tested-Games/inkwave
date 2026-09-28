@@ -1,3 +1,4 @@
+import { G } from '../../core/ctx.js';
 // Registries for main-weapon and sub-weapon kinds that live in their own modules (src/game/kits/<kind>.js). Each kit
 // module registers itself when imported (kits/index.js imports them all); the core systems look a kind up here after
 // their built-in ones. Hooks are all optional unless marked.
@@ -41,5 +42,24 @@
 //                                        actor it tracks, or null) } + kind extras (waddle: senseRadius, left;
 //                                        torpedo: lockRange, hover)
 // }
+//
+// Online (src/net/netmatch.js), any kit:
+//   ghost?(actor, data)                a remote player's world object, from the owner's G.netm.recKit(actor, kind, data)
+//                                      (data: a short array of rounded numbers): build a visual copy — it never paints
+//                                      (netmatch mutes paint while ghost() runs; the kit keeps muting in its own tick for
+//                                      ghost objects) and never hurts (a remote attacker's hits are dropped). Shields /
+//                                      curtains stay solid (they block the local player's shots like the owner's do).
+//   MAIN_KITS only: netState?(runner) → int   the pose / state bits other screens need (packed each tick)
+//                   netApply?(runner, bits, dt)   a remote runner: rebuild runner.kit from those bits
+// KIT_GHOSTS[kind] = { ghost } — ghost-only entries for things that aren't a main or sub kit (e.g. a special's objects)
 export const MAIN_KITS = {};
 export const SUB_KITS = {};
+export const KIT_GHOSTS = {};
+// the local owner records a spawn for the other players (no-op offline / for remote actors)
+export function netRec(actor, kind, data) { G.netm?.recKit?.(actor, kind, data); }
+// run fn with paint muted when obj is a ghost (a remote player's copy): its splats are the owner's to send
+export function ghostMute(obj, fn) {
+  const nm = obj && obj.ghost ? G.netm : null;
+  if (nm) nm.mute++;
+  try { return fn(); } finally { if (nm) nm.mute--; }
+}

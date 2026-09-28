@@ -22,7 +22,7 @@ import { G, emit, clamp, lerp } from '../../core/ctx.js';
 import { WEAPONS, PLAYER } from '../../config.js';
 import { Physics, Hit } from '../physics.js';
 import { superEllipsoid } from '../character-geo.js';
-import { MAIN_KITS } from './registry.js';
+import { MAIN_KITS, netRec } from './registry.js';
 import { MELEE } from '../bots.js';
 import './mitts-model.js';
 import './mitts-assets.js';
@@ -35,6 +35,8 @@ const _c = new THREE.Color(), _xa = new THREE.Vector3(), _ya = new THREE.Vector3
 const _hit = new Hit(), _hitP = new Hit(), _hitC = new Hit();
 const _res = { t: 0, dist: 0 };
 const W = () => WEAPONS.mitts;
+const TAU = Math.PI * 2;
+const r2 = (x) => Math.round(x * 100) / 100, r3 = (x) => Math.round(x * 1000) / 1000;
 const HAND_R = Object.freeze({ hand: 0, valueOf() { return 1; } }), HAND_L = Object.freeze({ hand: 1, valueOf() { return 1; } });
 const near = (p, r = 30) => { const c = G.rig?.gameCam || G.camera; return !!c && c.position.distanceToSquared(p) < r * r; };
 function rumble(a, strong, weak, ms) { if (a && a.isLocal && !a.isBot) G.input?.rumble?.(strong, weak, ms); }
@@ -121,16 +123,22 @@ function gloveMuzzle(a, hand, out) {
   return out;
 }
 
+// a fist leaves the glove at m along dir. ghost: a remote player's (online) — flies and bursts for the eye only
+function spawnFist(a, w, hand, m, dir, ghost = false) {
+  const f = fistPool.pop() || { pos: new THREE.Vector3(), prev: new THREE.Vector3(), start: new THREE.Vector3(), vel: new THREE.Vector3(), dir: new THREE.Vector3() };
+  f.owner = a; f.team = a.team; f.age = 0; f.life = w.fistRange / w.fistSpeed; f.hand = hand; f.seed = Math.random();
+  f.sp = !!a.specialActive; f.trail = -0.8; f.spin = (Math.random() - 0.5) * 0.6; f.ghost = ghost;
+  f.pos.copy(m); f.prev.copy(m); f.start.copy(m); f.dir.copy(dir); f.vel.copy(dir).multiplyScalar(w.fistSpeed);
+  fists.push(f);
+  if (a.isLocal || near(m)) G.audio?.play('mitts_punch', { pos: a.isLocal ? undefined : m, volume: a.isLocal ? 0.6 : 0.45, pitch: hand ? 1.06 : 0.97 });
+  return f;
+}
 function fireFist(a, w, hand) {
   const m = gloveMuzzle(a, hand, _v);
   const dir = G.projectiles._aimFrom(a, m, _dir);
   G.projectiles._spread(dir, w.punchSpread);
-  const f = fistPool.pop() || { pos: new THREE.Vector3(), prev: new THREE.Vector3(), start: new THREE.Vector3(), vel: new THREE.Vector3(), dir: new THREE.Vector3() };
-  f.owner = a; f.team = a.team; f.age = 0; f.life = w.fistRange / w.fistSpeed; f.hand = hand; f.seed = Math.random();
-  f.sp = !!a.specialActive; f.trail = -0.8; f.spin = (Math.random() - 0.5) * 0.6;
-  f.pos.copy(m); f.prev.copy(m); f.start.copy(m); f.dir.copy(dir); f.vel.copy(dir).multiplyScalar(w.fistSpeed);
-  fists.push(f);
-  if (a.isLocal || near(m)) G.audio?.play('mitts_punch', { pos: a.isLocal ? undefined : m, volume: a.isLocal ? 0.6 : 0.45, pitch: hand ? 1.06 : 0.97 });
+  spawnFist(a, w, hand, m, dir);
+  netRec(a, 'mitts', [0, r2(m.x), r2(m.y), r2(m.z), r3(dir.x), r3(dir.y), r3(dir.z), hand]);
   emit('weapon:fire', { actor: a, weapon: w.id, muzzle: m.clone(), dir: dir.clone(), hand });
   const r = a.weaponRunner;
   if (r.rumbleT <= 0) { r.rumbleT = 0.08; rumble(a, 0.05, 0.12, 45); }
@@ -144,6 +152,7 @@ function burstFist(f, at, direct, normal) {
   const w = W(), o = f.owner;
   if (!o) return;
   const c = _a.copy(at);
+  if (f.ghost) { burstFx(f, o, c, direct, normal, w); return; }
   let area = 0;
   if (normal) area = G.paint.splat(_b.copy(at).addScaledVector(normal, 0.12), w.fistPaint * (0.85 + Math.random() * 0.3), f.team, { seed: f.seed, stretch: f.dir, stretchAmt: 0.45 });
   else {
@@ -160,6 +169,9 @@ function burstFist(f, at, direct, normal) {
   }
   G.specials?.areaHit?.(c, w.splashRadius, w.splashMin, f.team, o);
   if (direct !== 'boss') G.boss?.splash(o, c, w.splashRadius, w.splashMax, w.splashMin, 'mitts');   // Boss Battle
+  burstFx(f, o, c, direct, normal, w);
+}
+function burstFx(f, o, c, direct, normal, w) {
   const col = o.color, show = o.isLocal || near(c, 26);
   if (show) {
     const n = normal || _v2.copy(f.dir).negate();
@@ -173,15 +185,22 @@ function burstFist(f, at, direct, normal) {
 }
 
 function updateFists(dt) {
-  const w = W();
+  const w = W(), nm = G.netm;
   for (let i = fists.length - 1; i >= 0; i--) {
     const f = fists[i];
+    if (f.ghost && nm) nm.mute++;   // (a ghost's splats are its owner's to send)
+    try { stepFist(f, i, w, dt); } finally { if (f.ghost && nm) nm.mute--; }
+  }
+  drawFists();
+}
+function stepFist(f, i, w, dt) {
+  {
     let dead = !f.owner;
     f.age += dt;
     f.prev.copy(f.pos);
     f.pos.addScaledVector(f.vel, dt);
     const hr0 = w.fistSize;
-    // bodies
+    // bodies (a ghost fist bursts on them for the eye; the owner's client decides the hit)
     if (!dead) for (const e of G.actors) {
       if (e.team === f.team || !e.alive) continue;
       const h = e.hitH || (e.form === 'squid' ? PLAYER.squidHeight : PLAYER.height), hr = e.hitR || PLAYER.radius;
@@ -189,7 +208,7 @@ function updateFists(dt) {
       Physics.segmentCapsuleDist(f.prev, f.pos, hitBase(e), hr, h, _res);
       if (_res.dist < hr * 0.95 + hr0) {
         _v.copy(f.prev).lerp(f.pos, _res.t);
-        G.projectiles.applyHit(f.owner, e, w.punchDamage, 'mitts');
+        if (!f.ghost) G.projectiles.applyHit(f.owner, e, w.punchDamage, 'mitts');
         G.fx?.burst(_v, _v2.copy(f.dir).negate(), f.owner.color, { count: 7, speed: 3.2, size: 0.08 });
         burstFist(f, _v, e, null);
         dead = true; break;
@@ -200,9 +219,10 @@ function updateFists(dt) {
       const bh = G.boss.segHit(f.prev, f.pos, hr0);
       if (bh) { const at = bh.point.clone(); G.boss.hit(f.owner, w.punchDamage, bh.target, 'mitts', at); burstFist(f, at, 'boss', null); dead = true; }
     }
-    // enemy curtains / devices / special objects catch it (and it bursts there)
-    if (!dead && G.subs && G.subs.blockShot(f.prev, f.pos, f.team, w.punchDamage)) { burstFist(f, f.pos, null, null); dead = true; }
-    if (!dead && G.specials && G.specials.shotHit(f.prev, f.pos, f.team, w.punchDamage, f.owner)) { burstFist(f, f.pos, null, null); dead = true; }
+    // enemy curtains / devices / special objects catch it (and it bursts there) — a ghost's blow costs them nothing
+    const fd = f.ghost ? 0 : w.punchDamage;
+    if (!dead && G.subs && G.subs.blockShot(f.prev, f.pos, f.team, fd)) { burstFist(f, f.pos, null, null); dead = true; }
+    if (!dead && G.specials && G.specials.shotHit(f.prev, f.pos, f.team, fd, f.owner)) { burstFist(f, f.pos, null, null); dead = true; }
     // the level
     if (!dead) {
       const h = G.physics.segment(f.prev, f.pos, _hit, true);
@@ -222,7 +242,6 @@ function updateFists(dt) {
     }
     if (dead) { f.owner = null; fists[i] = fists[fists.length - 1]; fists.pop(); fistPool.push(f); }
   }
-  drawFists();
 }
 function drawFists() {
   const mesh = fists.length || (fistMesh && fistMesh.count) ? ensureFistMesh() : null;
@@ -361,23 +380,50 @@ function releaseLeap(r, k) {
   k.trail = 0; k.trailP.copy(a.pos); k.predT = 0;
   predictLeap(a.pos, v, k.land, null);
   a.character.trigger('jump');
-  const col = a.color;
-  if (a.isLocal || near(a.pos)) {
-    G.audio?.play('mitts_leap', { pos: a.isLocal ? undefined : a.pos, volume: a.isLocal ? 0.75 : 0.55, pitch: 1.05 - 0.15 * c });
-    if (!fromWall) {
-      G.fx?.burst(_v2.copy(a.pos).setY(a.pos.y + 0.08), UP, col, { count: 14, speed: 5, size: 0.08, spread: 0.7 });
-      G.fx?.ring?.(a.pos, UP, col, { radius: 1.3, life: 0.35 });
-    } else G.fx?.burst(_v2.copy(a.pos).setY(a.pos.y + 1), k.clingN, col, { count: 12, speed: 4, size: 0.08 });
-  }
+  leapFx(a, a.pos, c, fromWall ? k.clingN : null);
+  netRec(a, 'mitts', [2, r2(a.pos.x), r2(a.pos.y), r2(a.pos.z), r2(c), fromWall ? r2(k.clingN.x) : 0, fromWall ? r2(k.clingN.z) : 0, fromWall ? 1 : 0]);
   // push-off splat
   if (!fromWall) credit(a, G.paint.splat(_v2.copy(a.pos).setY(a.pos.y + 0.25), 0.9, a.team, { seed: Math.random() }));
   emit('mitts:leap', { actor: a, from: a.pos.clone(), to: k.land.pos.clone(), kind: k.land.kind, charge: c });
   rumble(a, 0.25, 0.35, 110);
 }
 
+// the launch: whoosh + a ring of ink off the deck (or a burst off the wall it pushed away from: wallN)
+function leapFx(a, pos, c, wallN) {
+  if (!(a.isLocal || near(pos))) return;
+  const col = a.color;
+  G.audio?.play('mitts_leap', { pos: a.isLocal ? undefined : pos, volume: a.isLocal ? 0.75 : 0.55, pitch: 1.05 - 0.15 * c });
+  if (!wallN) {
+    G.fx?.burst(_v2.copy(pos).setY(pos.y + 0.08), UP, col, { count: 14, speed: 5, size: 0.08, spread: 0.7 });
+    G.fx?.ring?.(pos, UP, col, { radius: 1.3, life: 0.35 });
+  } else G.fx?.burst(_v2.copy(pos).setY(pos.y + 1), wallN, col, { count: 12, speed: 4, size: 0.08 });
+}
+// the landing's look and sound (the ghost of a remote leap plays just this: its paint + hits are the owner's)
+function landFx(a, at, n, c) {
+  const w = W(), col = a.color;
+  if (a.isLocal || near(c, 40)) {
+    G.fx?.explosion(c, col, 1.9);
+    if (n.y > 0.7) G.fx?.superJumpLand?.(at, col);
+    else G.fx?.ring?.(at, n, col, { radius: w.landRadius, life: 0.45 });
+    G.audio?.play('mitts_land', { pos: c, volume: a.isLocal ? 0.95 : 0.75 });
+  }
+  emit('shake', { pos: c.clone(), amount: 0.35 });
+}
+// in flight: the landing zone marked on the ground in the leaper's ink, for everyone (re-aimed now and then in case
+// something nudged the flight; a remote leaper's is predicted from its replicated velocity)
+function telegraph(a, k, w, dt) {
+  k.predT -= dt;
+  if (k.predT <= 0) { k.predT = 0.1; predictLeap(a.pos, a.vel, k.land, null); }
+  const L = k.land;
+  if (L.kind === 'ground' || L.kind === 'wall') {
+    const at = L.kind === 'wall' ? L.hitPt : L.pos, n = L.normal;
+    G.fx?.mark?.(_v2.copy(at).addScaledVector(n, 0.03), n, a.color, w.landRadius, 3, 0.95, G.time % 1, 1.2, 0.5);
+    G.fx?.mark?.(_v2.copy(at).addScaledVector(n, 0.035), n, a.color, w.landRadius * 0.45 * (0.8 + 0.2 * Math.sin(G.time * 20)), 4, 0.8, G.time % 1, 1, 0.3);
+  }
+}
 // the leap's splash where it comes down (ground or wall): damage ring + big splat + FX
 function landSplash(a, at, n) {
-  const w = W(), col = a.color;
+  const w = W();
   const c = _a.copy(at).addScaledVector(n, 0.35);
   let area = G.paint.splat(c, w.landPaint, a.team, { seed: Math.random() });
   for (let i = 0; i < 6; i++) {
@@ -398,13 +444,8 @@ function landSplash(a, at, n) {
   }
   G.specials?.areaHit?.(c, w.landRadius, w.landDamageMin, a.team, a);
   G.boss?.splash(a, c, w.landRadius, w.landDamageMax, w.landDamageMin, 'mitts');   // Boss Battle
-  if (a.isLocal || near(c, 40)) {
-    G.fx?.explosion(c, col, 1.9);
-    if (n.y > 0.7) G.fx?.superJumpLand?.(at, col);
-    else G.fx?.ring?.(at, n, col, { radius: w.landRadius, life: 0.45 });
-    G.audio?.play('mitts_land', { pos: c, volume: a.isLocal ? 0.95 : 0.75 });
-  }
-  emit('shake', { pos: c.clone(), amount: 0.35 });
+  landFx(a, at, n, c);
+  netRec(a, 'mitts', [1, r2(at.x), r2(at.y), r2(at.z), r2(n.x), r2(n.y), r2(n.z)]);
   emit('mitts:land', { actor: a, pos: c.clone(), normal: n.clone(), radius: w.landRadius });
   rumble(a, 0.45, 0.5, 160);
 }
@@ -555,15 +596,7 @@ function update(r, dt, inp, w) {
           if (g.hit) credit(a, G.paint.splat(_v2.copy(g.point).addScaledVector(g.normal, 0.08), 0.42 + Math.random() * 0.15, a.team, { seed: Math.random() }));
         }
         if (near(a.pos, 34)) G.fx?.superJumpTrail?.(_v2.copy(a.pos).setY(a.pos.y + 0.8), a.vel, a.color);
-        // the landing telegraph, for everyone (re-aimed now and then in case something nudged the flight)
-        k.predT -= dt;
-        if (k.predT <= 0) { k.predT = 0.1; predictLeap(a.pos, a.vel, k.land, null); }
-        const L = k.land;
-        if (L.kind === 'ground' || L.kind === 'wall') {
-          const at = L.kind === 'wall' ? L.hitPt : L.pos, n = L.normal;
-          G.fx?.mark?.(_v2.copy(at).addScaledVector(n, 0.03), n, a.color, w.landRadius, 3, 0.95, G.time % 1, 1.2, 0.5);
-          G.fx?.mark?.(_v2.copy(at).addScaledVector(n, 0.035), n, a.color, w.landRadius * 0.45 * (0.8 + 0.2 * Math.sin(G.time * 20)), 4, 0.8, G.time % 1, 1, 0.3);
-        }
+        telegraph(a, k, w, dt);
       }
     }
   }
@@ -752,8 +785,48 @@ const bot = {
 };
 MELEE.mitts = true;
 
+// ================================================================================================ online
+// Other players see a remote Mitts kid from: netState bits in its tick (1 charging · 2 leaping · 4 clinging · 8 full
+// charge · bits 4–9 the cling wall's facing, 64 steps) → netApply rebuilds its runner.kit (the gloves' / body's pose, the
+// landing telegraph, cling sounds); and kit records → ghost: 0 a fist (flies + bursts for the eye), 1 a landing splash's
+// look, 2 a leap's launch.
+function netState(r) {
+  const k = r.kit && r.kit.mitts ? r.kit : null;
+  if (!k) return 0;
+  let b = (k.charging ? 1 : 0) | (k.leaping ? 2 : 0) | (k.cling ? 4 : 0) | (k.full ? 8 : 0);
+  if (k.cling) b |= (Math.round((Math.atan2(k.clingN.x, k.clingN.z) / TAU) * 64) & 63) << 4;
+  return b;
+}
+function netApply(r, b, dt) {
+  const k = K(r), a = r.a, w = W();
+  const wasLeap = k.leaping, wasCling = k.cling;
+  k.seen = G.time;
+  k.charging = !!(b & 1); k.full = !!(b & 8); k.charge = r.charge || 0;
+  k.leaping = !!(b & 2);
+  k.cling = !!(b & 4); k.hang = false;           // (a remote kid's position is its owner's: nothing to hold here)
+  if (k.cling) {
+    const ang = (((b >> 4) & 63) / 64) * TAU;
+    k.clingN.set(Math.sin(ang), 0, Math.cos(ang));
+    k.clingPt.set(a.pos.x - k.clingN.x * PLAYER.radius, a.pos.y + 1.0, a.pos.z - k.clingN.z * PLAYER.radius);
+  }
+  if (wasLeap && !k.leaping) k.landT = 0; else k.landT += dt;
+  if (k.leaping) telegraph(a, k, w, dt);
+  if (k.cling !== wasCling && near(a.pos, 30)) G.audio?.play(k.cling ? 'mitts_cling' : 'mitts_unstick', { pos: a.pos, volume: 0.5 });
+}
+function ghost(a, d) {
+  const w = W();
+  switch (d[0]) {
+    case 0: spawnFist(a, w, d[7] | 0, _v.set(d[1], d[2], d[3]), _dir.set(d[4], d[5], d[6]), true); break;
+    case 1: { const at = _v3.set(d[1], d[2], d[3]), n = _v2.set(d[4], d[5], d[6]); landFx(a, at, n, _a.copy(at).addScaledVector(n, 0.35)); break; }
+    case 2: leapFx(a, _v3.set(d[1], d[2], d[3]), d[4], d[7] ? _dir.set(d[5], 0, d[6]) : null); break;
+  }
+}
+
 // ================================================================================================ registration
 MAIN_KITS.mitts = {
+  netState,
+  netApply,
+  ghost,
   update,
   jump,
   busy: (r) => !!(r.kit && r.kit.mitts && r.kit.leaping),

@@ -20,7 +20,7 @@ import * as THREE from 'three';
 import { G, emit, on, clamp, lerp, angleDiff } from '../../core/ctx.js';
 import { WEAPONS, PLAYER, weaponRange } from '../../config.js';
 import { Physics, Hit } from '../physics.js';
-import { MAIN_KITS } from './registry.js';
+import { MAIN_KITS, netRec } from './registry.js';
 import { CHARGES, LONG } from '../bots.js';
 import { rumble } from '../actor.js';
 import { registerWeaponModel } from '../character-weapons.js';
@@ -96,7 +96,7 @@ function fireBlast(r, w) {
     _v.copy(dir).addScaledVector(_r, ox).addScaledVector(_u, oy).normalize();
     const p = PJ.fireCustom(a, m, _v, {
       // one speed for the whole blast (± a hair): the pellets arrive together, so a blast lands as one hit
-      type: 'shot', speed: w.projSpeed * (0.985 + Math.random() * 0.03), range: w.range, damage: 0, radius: w.pelletPaint * (0.85 + Math.random() * 0.3),
+      type: 'shot', speed: w.projSpeed * (0.985 + Math.random() * 0.03), range: w.range, life: w.pelletLife, damage: 0, radius: w.pelletPaint * (0.85 + Math.random() * 0.3),
       size: w.pelletSize, grav: w.pelletGrav, drag: w.pelletDrag, straight: w.straightTime, weaponId: 'brolly', trailEvery: 0,
       look: { ...LOOK, vis: LOOK.vis * (i === 0 ? 1.25 : 0.85 + Math.random() * 0.3) },
     });
@@ -261,19 +261,30 @@ function launch(r, k, w) {
   // start where the held canopy was, settle onto the ground just ahead
   const g = G.physics.raycast(_v.set(a.pos.x + dir.x * 0.9, a.pos.y + 1.2, a.pos.z + dir.z * 0.9), DOWN, 3.5, _hit, true);
   const pos = g.hit ? g.point.clone() : new THREE.Vector3(a.pos.x + dir.x * 0.9, a.pos.y, a.pos.z + dir.z * 0.9);
-  const c = {
-    held: false, alive: true, owner: a, team: a.team, pos, dir, t: 0, life: w.launchLife, hp: Math.max(k.hp, w.canopyHp * 0.5), hpMax: w.canopyHp,
-    vy: 0, paintAcc: 0, shoving: false, h0: a.pos.y + (a.smoothY || 0) + HELD.up - pos.y, flash: 0, shake: 0, sndT: -9, fxT: 0,
-    sh: null, mesh: null, mats: null,
-  };
-  c.sh = { held: false, kit: null, ref: c, owner: a, team: a.team, C: new THREE.Vector3(), N: dir.clone(), R: LAUNCH_R, Cp: new THREE.Vector3(), Np: dir.clone(), prev: false };
-  buildLaunchedMesh(c);
-  LAUNCHED.push(c); STATS.launches++;
+  const hp = Math.max(k.hp, w.canopyHp * 0.5), h0 = a.pos.y + (a.smoothY || 0) + HELD.up - pos.y;
+  addLaunched(a, pos, dir, hp, h0, false);
+  netRec(a, 'brolly', [r2(pos.x), r2(pos.y), r2(pos.z), r3(dir.x), r3(dir.z), Math.round(hp), r2(h0)]);
+  STATS.launches++;
   k.state = 'launched'; k.regrowT = w.regrowTime; k.regrowK = 0; k.open = 0; k.grow = 0; k.openT = 0; k.launchK = 0; k.lockRelease = true;
   sound(a, 'brolly_launch', 0.8);
   if (a.isLocal) emit('recoil', { amount: 0.008 });
   rumble(a, 0.3, 0.35, 120);
   emit('brolly:launch', { actor: a, pos: pos.clone(), dir: dir.clone() });
+}
+// a launched canopy in the world. ghost: a remote player's (online) — it slides, blocks shots and holds players back
+// like the owner's (solid on every screen), but never paints (its stripe is the owner's to send)
+function addLaunched(a, pos, dir, hp, h0, ghost) {
+  const w = W();
+  const c = {
+    held: false, alive: true, owner: a, team: a.team, pos: pos.clone(), dir: dir.clone(), t: 0, life: w.launchLife, hp, hpMax: w.canopyHp,
+    vy: 0, paintAcc: 0, shoving: false, h0, flash: 0, shake: 0, sndT: -9, fxT: 0, ghost,
+    sh: null, mesh: null, mats: null,
+  };
+  c.sh = { held: false, kit: null, ref: c, owner: a, team: a.team, C: new THREE.Vector3(), N: c.dir.clone(), R: LAUNCH_R, Cp: new THREE.Vector3(), Np: c.dir.clone(), prev: false };
+  buildLaunchedMesh(c);
+  LAUNCHED.push(c);
+  if (ghost) sound(a, 'brolly_launch', 0.8);
+  return c;
 }
 function buildLaunchedMesh(c) {
   const geo = canopyOpenGeo();
@@ -400,7 +411,14 @@ function tick(dt) {
     k.flash = Math.max(0, k.flash - dt * 6); k.shake *= Math.exp(-dt * 12);
   }
   // launched canopies move first (their shields must be where they are this frame)
-  for (let i = LAUNCHED.length - 1; i >= 0; i--) if (!updateLaunched(LAUNCHED[i], dt)) LAUNCHED.splice(i, 1);
+  const nm = G.netm;
+  for (let i = LAUNCHED.length - 1; i >= 0; i--) {
+    const c = LAUNCHED[i], gm = c.ghost && nm;   // (a ghost canopy's stripe is its owner's to send)
+    if (gm) nm.mute++;
+    let keep = true;
+    try { keep = updateLaunched(c, dt); } finally { if (gm) nm.mute--; }
+    if (!keep) LAUNCHED.splice(i, 1);
+  }
   refreshShields();
   // 1) every projectile's next step vs every enemy canopy: blocked shots end on the canopy (before the body behind it)
   const PJ = G.projectiles, list = PJ.list;
@@ -609,7 +627,37 @@ function shields(out) {
 }
 
 // ---------------------------------------------------------------------------------------------- registration
+// ---------------------------------------------------------------------------------------------- online
+// A remote Brolly kid: netState packs its canopy (state 0 ready · 1 broken · 2 launched in bits 0–1, open 0–15 bits 2–5,
+// grow 0–7 bits 6–8, hp 0–31 bits 9–13, regrow 0–7 bits 14–16) → netApply rebuilds runner.kit, so its held canopy is
+// drawn AND blocks the local player's shots here (refreshShields reads every actor's kit). A launch → ghost: a solid
+// sliding canopy (see addLaunched).
+const STATE_N = { ready: 0, broken: 1, launched: 2 }, STATE_OF = ['ready', 'broken', 'launched'];
+function netState(r) {
+  const k = r.kit && r.kit.brolly ? r.kit : null;
+  if (!k) return 0;
+  const q = (v, n) => Math.max(0, Math.min(n, Math.round(clamp(v, 0, 1) * n)));
+  return (STATE_N[k.state] ?? 0) | (q(k.open, 15) << 2) | (q(k.grow, 7) << 6) | (q(k.hp / k.hpMax, 31) << 9) | (q(k.regrowK || 0, 7) << 14);
+}
+function netApply(r, b) {
+  const k = kitOf(r);
+  const st = STATE_OF[b & 3] || 'ready';
+  const hp = (((b >> 9) & 31) / 31) * k.hpMax;
+  if (hp < k.hp - 1) { k.flash = Math.min(1, (k.flash || 0) + 0.4); k.shake = Math.min(1, (k.shake || 0) + 0.3); }   // hit on the owner's screen
+  k.state = st; k.hp = hp;
+  k.open = ((b >> 2) & 15) / 15; k.grow = ((b >> 6) & 7) / 7; k.regrowK = ((b >> 14) & 7) / 7;
+}
+function ghost(a, d) {
+  if (!Array.isArray(d)) return;
+  addLaunched(a, _gp.set(d[0], d[1], d[2]), _gd.set(d[3], 0, d[4]).normalize(), d[5], d[6], true);
+}
+const _gp = new THREE.Vector3(), _gd = new THREE.Vector3();
+const r2 = (x) => Math.round(x * 100) / 100, r3 = (x) => Math.round(x * 1000) / 1000;
+
 MAIN_KITS.brolly = {
+  netState,
+  netApply,
+  ghost,
   update,
   busy: () => false,
   firingPose: (r) => !!(r.kit && r.kit.brolly && r.kit.open > 0),
@@ -730,4 +778,5 @@ SFX.brolly_regrow = {
   },
 };
 
-export {};
+// tests / online checks
+export const BROLLY_DEBUG = { LAUNCHED, STATS, refreshShields };

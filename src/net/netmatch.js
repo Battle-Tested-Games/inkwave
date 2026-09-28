@@ -21,7 +21,8 @@
 // shooter's client (what you see is what you hit) and applied by the victim's owner.
 import * as THREE from 'three';
 import { G, emit, on } from '../core/ctx.js';
-import { PLAYER, WEAPONS, mapNoBots } from '../config.js';
+import { PLAYER, WEAPONS, SPECIAL_ORDER, mapNoBots } from '../config.js';
+import { MAIN_KITS, SUB_KITS, KIT_GHOSTS } from '../game/kits/registry.js';
 import { BotBrain } from '../game/bots.js';
 import { Boss } from '../boss/boss.js';
 
@@ -123,6 +124,15 @@ export class NetMatch {
     const o = b.owner;
     if (!o || o.remote) return;
     this._rec(['b', o.nid, b.kind, r2(b.pos.x), r2(b.pos.y), r2(b.pos.z), r2(b.vel.x), r2(b.vel.y), r2(b.vel.z)]);
+  }
+
+  // Kit weapons / subs / specials with world objects of their own (src/game/kits/*): the owner records a spawn as
+  // ['k', nid, kind, data] (data: a short array of rounded numbers the kit packs); everyone else hands it to the kit's
+  // ghost(actor, data) — a visual copy (and, for shields, a solid one): ghosts never paint (mute) and never hurt (a
+  // remote attacker's hits are dropped; the owner's splats and hits arrive separately)
+  recKit(a, kind, data) {
+    if (!a || a.remote || a.nid === undefined || G.netm !== this) return;
+    this._rec(['k', a.nid, kind, data]);
   }
 
   _onLocalEvent(name, e) {
@@ -352,7 +362,8 @@ export class NetMatch {
     a.hp = S.hp; a.ink = S.ink; a.special = S.sp;
     a.invuln = f & F.invuln ? 0.1 : 0;
     a.stats.turf = Math.max(a.stats.turf, S.turf);
-    a.specialActive = f & F.special ? (a.specialActive || { id: a.weapon.special, net: true }) : null;
+    if (S.spx && SPECIAL_ORDER[S.spx - 1]) a.specialId = SPECIAL_ORDER[S.spx - 1];   // their loadout's special
+    a.specialActive = f & F.special ? (a.specialActive || { id: a.specialId || a.weapon.special, net: true }) : null;
     a.superJumpState = f & (F.sjCharge | F.sjFlight) ? (a.superJumpState || { phase: 'charge', net: true }) : null;
     if (a.superJumpState) a.superJumpState.phase = f & F.sjFlight ? 'flight' : 'charge';
     // weapon pose state (charge glow, roller drum, splatling spin, dualies lock …)
@@ -364,6 +375,8 @@ export class NetMatch {
     wr.slosh = f & F.slosh ? Math.max(0, wr.slosh) : -1;
     wr.lockT = S.lock;
     if (f & F.dodge) { if (!wr.dodge) wr.dodge = { t: 0, dur: a.weapon.rollTime || 0.3 }; wr.dodge.t += dt; } else wr.dodge = null;
+    // kit weapons' own pose state (a mitts leap / wall cling, a brolly canopy …): netState → netApply
+    MAIN_KITS[a.weapon?.kind]?.netApply?.(wr, S.ks | 0, dt);
     // derived moments the owner produced inline: landings (squash, splash, sound) and squid in / out
     if (!n.prevGrounded && a.grounded && !a.superJumpState) {
       const speed = Math.max(0, -n.prevVy);
@@ -451,6 +464,14 @@ export class NetMatch {
         break;
       }
       case 'ev': this._playEvent(e[2], e[3]); break;
+      case 'k': {
+        const a = this.byNid.get(e[2]);
+        const K = MAIN_KITS[e[3]] || SUB_KITS[e[3]] || KIT_GHOSTS[e[3]];
+        if (!a || !a.remote || !K || !K.ghost) break;
+        this.mute++;
+        try { K.ghost(a, e[4]); } catch (err) { console.warn('[inkwave] kit ghost', e[3], err); } finally { this.mute--; }
+        break;
+      }
       case 'bm': this.match?.boss?.onMove(e[2]); break;
       case 'bc': { const b = this.match?.boss; if (b && !b.sim) b._crabBurst(e[2], e[3], e[4], e[5], !!e[6]); break; }
     }
@@ -702,14 +723,15 @@ function packActor(a) {
   const n = a.climbing ? a.wallN : null;
   return [a.nid, r2(a.pos.x), r2(y), r2(a.pos.z), r2(a.vel.x), r2(a.vel.y), r2(a.vel.z), r3(a.yaw), r3(a.aimYaw), r3(a.aimPitch), f,
     Math.round(a.hp), Math.round(a.ink), Math.round(a.special), r2(wr.streaming ? wr.burstFrac : wr.charge), Math.round(a.stats.turf), a.netTp || 0,
-    n ? r2(n.x) : 0, n ? r2(n.y) : 0, n ? r2(n.z) : 0, r2(wr.lockT || 0)];
+    n ? r2(n.x) : 0, n ? r2(n.y) : 0, n ? r2(n.z) : 0, r2(wr.lockT || 0),
+    MAIN_KITS[a.weapon?.kind]?.netState?.(wr) | 0, SPECIAL_ORDER.indexOf(a.specialId) + 1];
 }
 
 function unpackActor(s, ts) {
-  return { t: ts, x: s[1], y: s[2], z: s[3], vx: s[4], vy: s[5], vz: s[6], yaw: s[7], aimYaw: s[8], aimPitch: s[9], f: s[10], hp: s[11], ink: s[12], sp: s[13], ch: s[14], turf: s[15], tp: s[16], wx: s[17], wy: s[18], wz: s[19], lock: s[20] };
+  return { t: ts, x: s[1], y: s[2], z: s[3], vx: s[4], vy: s[5], vz: s[6], yaw: s[7], aimYaw: s[8], aimPitch: s[9], f: s[10], hp: s[11], ink: s[12], sp: s[13], ch: s[14], turf: s[15], tp: s[16], wx: s[17], wy: s[18], wz: s[19], lock: s[20], ks: s[21] || 0, spx: s[22] || 0 };
 }
 
-function blankSample() { return { t: 0, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, yaw: 0, aimYaw: 0, aimPitch: 0, f: 0, hp: 100, ink: 100, sp: 0, ch: 0, turf: 0, tp: 0, wx: 0, wy: 0, wz: 1, lock: 0 }; }
+function blankSample() { return { t: 0, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, yaw: 0, aimYaw: 0, aimPitch: 0, f: 0, hp: 100, ink: 100, sp: 0, ch: 0, turf: 0, tp: 0, wx: 0, wy: 0, wz: 1, lock: 0, ks: 0, spx: 0 }; }
 function copySample(s, o) { for (const k in s) o[k] = s[k]; return o; }
 
 // cubic Hermite on position (owner velocities as tangents), linear on velocity/angles, discrete state from the earlier
