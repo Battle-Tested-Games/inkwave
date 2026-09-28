@@ -1196,6 +1196,15 @@ export class HUD {
     }
   }
 
+  // world → NDC without three.js (camera matrices are plain arrays); used by the boss HUD's markers (hud-boss.js)
+  _project(cam, x, y, z) {
+    const v = cam.matrixWorldInverse.elements, p = cam.projectionMatrix.elements;
+    const ex = v[0] * x + v[4] * y + v[8] * z + v[12], ey = v[1] * x + v[5] * y + v[9] * z + v[13], ez = v[2] * x + v[6] * y + v[10] * z + v[14];
+    const cx = p[0] * ex + p[4] * ey + p[8] * ez + p[12], cy = p[1] * ex + p[5] * ey + p[9] * ez + p[13], cz = p[2] * ex + p[6] * ey + p[10] * ez + p[14], cw = p[3] * ex + p[7] * ey + p[11] * ez + p[15];
+    if (Math.abs(cw) < 1e-6) return null;
+    return { x: cx / cw, y: cy / cw, z: cw < 0 ? 2 : cz / cw };
+  }
+
   // online you can be on Bravo: the HUD is drawn from your side (your squad left, your colour as "self")
   _myTeam() { return G.local && G.local.team === 1 ? 1 : 0; }
   _actorFor(side, i) {

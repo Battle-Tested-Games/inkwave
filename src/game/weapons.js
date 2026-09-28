@@ -609,6 +609,12 @@ Object.assign(WeaponRunner.prototype, {
         if (G.time - last > w.brushHitCd) { this.rollHits.set(e, G.time); G.projectiles.applyHit(a, e, w.brushDamage, 'brush'); }
       }
     }
+    // Boss Battle: the bristles drag across HULLBREAKER's claws / belly or a crablet (like the roller's drum)
+    if (G.boss) {
+      const bh = G.boss.rollHit(a.pos, fx, fz, w.brushWidth);
+      const key = bh && (bh.boss ? G.boss : bh.target);
+      if (bh && G.time - (this.rollHits.get(key) || -9) > w.brushHitCd) { this.rollHits.set(key, G.time); G.boss.hit(a, w.brushDamage, bh.target, 'brush', bh.point.clone()); }
+    }
     const moved = a.pos.distanceTo(this.lastRollPos);
     if (moved < 0.22) return;
     this.lastRollPos.copy(a.pos);
