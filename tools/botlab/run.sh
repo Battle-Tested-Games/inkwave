@@ -14,8 +14,15 @@ for i in $(seq 1 900); do
   for n in $(seq 1 "$SLOTS"); do
     d="$LOCKS/slot$n"
     if mkdir "$d" 2>/dev/null; then echo $$ > "$d/pid"; slot=$n; break 2; fi
+    # stale lock (its owner is gone): move it aside atomically, then check it's still the lock we judged stale — a
+    # new owner may have taken the slot between our read and the move (then it goes straight back)
     p=$(cat "$d/pid" 2>/dev/null)
-    if [ -n "$p" ] && ! kill -0 "$p" 2>/dev/null; then rm -rf "$d"; fi   # stale lock
+    if [ -n "$p" ] && ! kill -0 "$p" 2>/dev/null; then
+      s="$d.stale.$$"
+      if mv "$d" "$s" 2>/dev/null; then
+        if [ "$(cat "$s/pid" 2>/dev/null)" = "$p" ]; then rm -rf "$s"; else mv "$s" "$d" 2>/dev/null || rm -rf "$s"; fi
+      fi
+    fi
   done
   sleep 2
 done
