@@ -11,9 +11,10 @@
 // first rebound (dashed), so the low angle is learnable.
 import * as THREE from 'three';
 import { G, emit, clamp } from '../../core/ctx.js';
-import { PLAYER } from '../../config.js';
+import { PLAYER, SUBS } from '../../config.js';
 import { Physics, Hit } from '../physics.js';
-import { SUB_KITS } from './registry.js';
+import { SUB_KITS, netRec, netId, ghostMute } from './registry.js';
+const r3 = (x) => Math.round(x * 1000) / 1000;
 import { registerSubModel, getSubDef, GEO_KIT } from '../character-weapons.js';
 import { superEllipsoid, smoothProfile } from '../character-geo.js';
 import { getPlasticMaterial, getInkMaterial } from '../character-mats.js';
@@ -192,20 +193,44 @@ function rebound(dir, n, sub) {
 function use(subs, a, sub) {
   const from = new V3(), dir = new V3();
   launch(a, sub, from, dir);
+  const b = spawn(subs, a, sub, from, dir, false, netId(a));
+  netRec(a, 'tracer', [0, b.gid, r3(from.x), r3(from.y), r3(from.z), r3(dir.x), r3(dir.y), r3(dir.z)]);
+  if (a.isLocal || a._nearCamera?.()) G.audio?.play('tracer_zap', { pos: a.isLocal ? undefined : from, volume: 0.8 });
+  emit('sub:use', { actor: a, kind: 'tracer' });
+}
+// Online, a remote player's bolt is a ghost: it flies and ricochets the same (its puddles are its owner's to send, its
+// hits are dropped), but it doesn't decide foe hits itself — its owner's end record does: [1, gid, x, y, z, foe nid]
+// (-1 a hit on no one here, -2 blocked by a device)
+function spawn(subs, a, sub, from, dir, ghost, gid) {
   const scene = sceneOf(subs);
   const b = {
     kind: 'tracer', sub, owner: a, team: a.team, pos: from.clone(), start: from.clone(), dir, left: sub.range, travel: 0, bounces: 0,
     state: 'fly', hitSet: new Set(), pts: [], sp: !!a.specialActive, age: 0, scene, head: buildHead(a.team), rib: makeRibbon(a.team, sub.trailLife),
-    hum: null, path: [from.clone()], direct: null, lastPt: -1,
+    hum: null, path: [from.clone()], direct: null, lastPt: -1, ghost, gid,
   };
   scene.add(b.head, b.rib);
   addPoint(b);
   bolts.push(b);
-  if (a.isLocal || a._nearCamera?.()) G.audio?.play('tracer_zap', { pos: a.isLocal ? undefined : from, volume: 0.8 });
   if (nearCam(from, 40)) b.hum = G.audio?.loop?.('tracer_hum', { pos: from, volume: 0.4 }) || null;
   if (nearCam(from, 30)) G.fx?.muzzle?.(from, dir, G.teamColors[a.team], 'shooter');
   poseHead(b);
-  emit('sub:use', { actor: a, kind: 'tracer' });
+  return b;
+}
+function ghost(a, d) {
+  if (!Array.isArray(d)) return;
+  const [op, gid] = d;
+  if (op === 0) {
+    if (bolts.some((x) => x.gid === gid)) return;
+    const from = new V3(d[2], d[3], d[4]);
+    spawn(G.subs, a, SUBS.tracer, from, new V3(d[5], d[6], d[7]).normalize(), true, gid);
+    if (a._nearCamera?.()) G.audio?.play('tracer_zap', { pos: from, volume: 0.8 });
+    return;
+  }
+  const b = bolts.find((x) => x.ghost && x.gid === gid);
+  if (!b || b.state !== 'fly' || op !== 1) return;
+  b.pos.set(d[2], d[3], d[4]); addPoint(b); b.path.push(b.pos.clone());
+  const e = d[5] >= 0 ? G.actors.find((x) => x.nid === d[5]) : null;
+  if (e) directHit(b, e); else end(b, d[5] === -2 ? 'blocked' : 'hit');
 }
 
 function addPoint(b) {
@@ -223,13 +248,14 @@ function tick(dt) {
     const b = bolts[i];
     b.age += dt;
     if (b.state === 'fly') {
-      advance(b, b.sub.speed * dt);
+      ghostMute(b, () => advance(b, b.sub.speed * dt));
       addPoint(b);
+      if (b.ghost && b.age > 4) end(b, 'range');   // (never heard how it ended)
     }
     // drop trail points that have fully faded (keep one so the next segment has a start)
     const life = b.sub.trailLife;
     while (b.pts.length > 1 && clock - b.pts[1].b > life) b.pts.shift();
-    trailTouch(b);
+    ghostMute(b, () => trailTouch(b));
     if (b.state !== 'fly' && (!b.pts.length || clock - b.pts[b.pts.length - 1].b > life)) { dispose(b); bolts.splice(i, 1); continue; }
     poseHead(b);
     drawRibbon(b);
@@ -251,7 +277,7 @@ function advance(b, dist) {
     _end.copy(b.pos).addScaledVector(b.dir, seg);
     // a foe on this stretch (the earliest one)
     let best = null, bt = 2;
-    for (const e of G.actors) {
+    if (!b.ghost) for (const e of G.actors) {   // (a ghost's foe hit is its owner's call)
       if (e.team === b.team || !e.alive) continue;
       const hr = hitR(e);
       if (Math.max(Math.abs(e.pos.x - b.pos.x), Math.abs(e.pos.z - b.pos.z)) > seg + 3) continue;
@@ -313,6 +339,7 @@ function directHit(b, e) {
 }
 function end(b, why) {
   if (b.state !== 'fly') return;
+  if (!b.ghost && (why === 'hit' || why === 'blocked')) netRec(b.owner, 'tracer', [1, b.gid, r3(b.pos.x), r3(b.pos.y), r3(b.pos.z), why === 'hit' ? b.direct?.nid ?? -1 : -2]);
   b.state = why;
   b.head.visible = false;
   if (why !== 'hit' && nearCam(b.pos, 30)) { G.fx?.burst(b.pos, _v.copy(b.dir).negate(), G.teamColors[b.team], { count: 5, speed: 2.2, size: 0.05 }); }
@@ -428,7 +455,9 @@ function hold(runner, dt, inp, sub) {
 
 // =============================================================================================== register
 SUB_KITS.tracer = {
+  ghost,
   use, hold, tick, clear: clearAll, noArc: true,
+  _bolts: bolts,   // test / tooling access
   bot: {
     // snap it at a foe in mid range (it's cheap); while painting, now and then skim one along the ground for puddles
     fight(brain, dist) {

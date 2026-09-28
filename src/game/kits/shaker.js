@@ -13,8 +13,9 @@
 // 'bomb:arm' / 'bomb:explode' { actor, pos, team, radius, kind: 'shaker', n } per blast.
 import * as THREE from 'three';
 import { G, emit, on, clamp, lerp, angleDiff } from '../../core/ctx.js';
-import { PLAYER } from '../../config.js';
-import { SUB_KITS } from './registry.js';
+import { PLAYER, SUBS } from '../../config.js';
+import { SUB_KITS, netRec, netId, ghostMute } from './registry.js';
+const r2 = (x) => Math.round(x * 100) / 100;
 import { registerSubModel, getSubDef, GEO_KIT } from '../character-weapons.js';
 import { superEllipsoid, lathe, smoothProfile } from '../character-geo.js';
 import { getPlasticMaterial, getInkMaterial } from '../character-mats.js';
@@ -361,6 +362,14 @@ function use(subs, a, sub) {
   if (isBot(a)) botLob(a, sub, 0.9);   // its first blast (after the landing slide) on the foe
   const pos = a.pos.clone(); pos.y += 1.35;
   const vel = G.projectiles.throwVelocity(a, sub.throwSpeed, new V3());
+  const it = spawn(a, sub, pos, vel, level, false, netId(a));
+  netRec(a, 'shaker', [0, it.gid, r2(pos.x), r2(pos.y), r2(pos.z), r2(vel.x), r2(vel.y), r2(vel.z), level]);
+  if (a.isLocal || a._nearCamera()) G.audio?.play('bomb_throw', { pos: a.isLocal ? undefined : a.pos, volume: 0.65, pitch: 0.95 + 0.06 * level });
+  emit('sub:use', { actor: a, kind: 'shaker', level });
+}
+// the can in flight (ghost: a remote player's, online — it flies and hops the same, but blasts only when its owner's
+// did: records [1, gid, x, y, z]; [2, gid] ends one that sank without going off)
+function spawn(a, sub, pos, vel, level, ghost, gid) {
   const dir = new V3(vel.x, 0, vel.z);
   if (dir.lengthSq() < 1e-6) dir.set(Math.sin(a.aimYaw), 0, Math.cos(a.aimYaw));
   dir.normalize();
@@ -369,11 +378,25 @@ function use(subs, a, sub) {
   m.inner.rotation.set(Math.random() * 6, Math.random() * 6, 0);
   G.scene.add(m.outer);
   const it = { owner: a, team: a.team, sub, level, left: level, blasts: 0, pos, vel, dir, m, state: 'fly', age: 0, fuse: -1, next: 0, trail: 0,
-    ground: 0, armed: false, sp: !!a.specialActive, spin: new V3(4 + Math.random() * 5, 0, 3 + Math.random() * 5), gp: new V3(), gn: new V3(0, 1, 0), gOk: false };
+    ground: 0, armed: false, sp: !!a.specialActive, spin: new V3(4 + Math.random() * 5, 0, 3 + Math.random() * 5), gp: new V3(), gn: new V3(0, 1, 0), gOk: false,
+    ghost, gid };
   items.push(it);
   lamps(it);
-  if (a.isLocal || a._nearCamera()) G.audio?.play('bomb_throw', { pos: a.isLocal ? undefined : a.pos, volume: 0.65, pitch: 0.95 + 0.06 * level });
-  emit('sub:use', { actor: a, kind: 'shaker', level });
+  return it;
+}
+function ghost(a, d) {
+  if (!Array.isArray(d)) return;
+  const [op, gid] = d;
+  if (op === 0) {
+    if (items.some((x) => x.gid === gid)) return;
+    spawn(a, SUBS.shaker, new V3(d[2], d[3], d[4]), new V3(d[5], d[6], d[7]), clamp(d[8] | 0, 1, 3), true, gid);
+    if (a._nearCamera()) G.audio?.play('bomb_throw', { pos: a.pos, volume: 0.65, pitch: 0.95 + 0.06 * d[8] });
+    return;
+  }
+  const it = items.find((x) => x.ghost && x.gid === gid && x.state !== 'dead');
+  if (!it) return;
+  if (op === 1) { it.pos.set(d[2], d[3], d[4]); it.fuse = -1; it.next = 0; blast(it); }
+  else if (op === 2) it.state = 'dead';
 }
 
 function lamps(it) {
@@ -411,11 +434,13 @@ function update(it, dt) {
   const hs = Math.hypot(it.vel.x, it.vel.z);
   if (!it.ground && hs > 1.5) {
     it.trail += hs * dt;
-    while (it.trail >= s.trailEvery) { it.trail -= s.trailEvery; drip(it); }
+    while (it.trail >= s.trailEvery) { it.trail -= s.trailEvery; if (!it.ghost) drip(it); }   // (a ghost's: its owner's drops arrive)
   }
   // ---- fuse (first landing) → blast → hop → blast …
-  if (it.fuse >= 0) { it.fuse -= dt; if (it.fuse <= 0) { it.fuse = -1; blast(it); } }
-  else if (it.next > 0) { it.next -= dt; if (it.next <= 0) blast(it); }
+  // (a ghost holds at the brink until its owner's blast record arrives)
+  if (it.fuse >= 0) { it.fuse -= dt; if (it.fuse <= 0) { if (it.ghost) it.fuse = 1e-3; else { it.fuse = -1; blast(it); } } }
+  else if (it.next > 0) { it.next -= dt; if (it.next <= 0) { if (it.ghost) it.next = 1e-3; else blast(it); } }
+  if (it.ghost && it.age > 20) it.state = 'dead';                           // (its owner left mid-throw)
   if (it.state === 'dead') return;
   if (it.pos.y < PLAYER.waterY - 1.8) { it.state = 'dead'; return; }        // sank: no blast
   if (!it.armed && it.age > 6) arm(it);                                     // never found a floor (wedged): go anyway
@@ -469,6 +494,7 @@ function drip(it) {
 function blast(it) {
   const s = it.sub, a = it.owner, team = it.team, col = G.teamColors[team];
   const c = it.pos.clone();
+  if (!it.ghost) netRec(a, 'shaker', [1, it.gid, r2(c.x), r2(c.y), r2(c.z)]);
   it.blasts++; it.left--;
   // ink: the floor it stands on + a few satellite splats
   let area = 0;
@@ -553,11 +579,15 @@ function pips() {
 SUB_KITS.shaker = {
   use,
   hold,
+  ghost,
   tick(dt) {
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
-      update(it, dt);
-      if (it.state === 'dead') { dispose(it); items.splice(i, 1); }
+      ghostMute(it, () => update(it, dt));
+      if (it.state === 'dead') {
+        if (!it.ghost && it.left > 0) netRec(it.owner, 'shaker', [2, it.gid]);   // sank without going off
+        dispose(it); items.splice(i, 1);
+      }
     }
     // a charge whose hold stopped without a throw (dived into ink, loadout swap, …): drop it quietly
     for (const a of G.actors) { const st = a.weaponRunner?.shaker; if (st && G.time - st.t1 > 0.15) drop(a, false); }
