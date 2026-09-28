@@ -685,7 +685,7 @@ MAIN_KITS.blade = {
     tactics: botTactics,
     // low on health in a fight at blade range (or charged and nearly there): finish it rather than turn and run
     stayIn(brain) {
-      const a = brain.a, t = brain.target; if (!t) return false;
+      const a = brain.a, t = brain.target; if (!t || !t.pos) return false;
       const d = Math.hypot(t.pos.x - a.pos.x, t.pos.z - a.pos.z), K = a.weaponRunner.kit;
       return Math.abs(t.pos.y - a.pos.y) < 1.4 && (d < 4.5 || (!!K && K.full && d < 5.5));
     },

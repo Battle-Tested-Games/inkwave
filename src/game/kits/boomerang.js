@@ -526,7 +526,7 @@ const bot = {
   // mid range: the hover catches them where they stand; point blank while under fire: a direct hit bursts on them
   fight(brain, dist) {
     const a = brain.a, tg = brain.target;
-    if (active(a) || !tg || !(brain.seeTimer > 0)) return false;
+    if (active(a) || !tg || !tg.pos || !(brain.seeTimer > 0)) return false;
     // only with the aim on them: the flat throw goes where the bot looks (a direct hit bursts on them)
     const off = Math.abs(angleDiff(a.aimYaw, Math.atan2(tg.pos.x - a.pos.x, tg.pos.z - a.pos.z)));
     if (off > Math.min(0.35, 0.9 / Math.max(dist, 1))) return false;
