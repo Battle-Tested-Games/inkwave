@@ -856,6 +856,7 @@ export class Projectiles {
 
   // every round enters the world here; online, rounds you own are recorded so the other players see them fly
   _push(p) {
+    if (p.owner?.remote) p.ghost = true;   // a remote player's round made here (a ghost sub's drop …) is a ghost too
     this.list.push(p);
     const nm = G.netm;
     if (nm && !p.ghost) nm.recProj(p);

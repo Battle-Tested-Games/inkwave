@@ -65,6 +65,9 @@ export function netId(owner) { return owner && owner.nid !== undefined ? owner.n
 // (kind: 'subs' for SubSystem items, else the kit kind — its netHurt(id, dmg) applies it on the owner's screen)
 export function netHurt(owner, kind, id, dmg) { if (id && dmg > 0) G.netm?.sendDevHit?.(owner, kind, id, dmg); }
 // run fn with paint muted when obj is a ghost (a remote player's copy): its splats are the owner's to send
+// true while a ghost (a remote player's replayed shot / bomb / sub) is being simulated: its damage to devices counts for
+// nothing here — the owner's own copy hits our ghost of the device and that hit arrives by netHurt
+export function netMuted() { return (G.netm?.mute | 0) > 0; }
 export function ghostMute(obj, fn) {
   const nm = obj && obj.ghost ? G.netm : null;
   if (nm) nm.mute++;

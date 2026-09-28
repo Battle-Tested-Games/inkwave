@@ -18,7 +18,7 @@ import { SUBS, PLAYER } from '../config.js';
 import { Physics, Hit } from './physics.js';
 import { getSubDef } from './character-weapons.js';
 import { getPlasticMaterial, getInkMaterial } from './character-mats.js';
-import { MAIN_KITS, SUB_KITS, KIT_GHOSTS, netRec, netId, netHurt } from './kits/registry.js';
+import { MAIN_KITS, SUB_KITS, KIT_GHOSTS, netRec, netId, netHurt, netMuted } from './kits/registry.js';
 const r2 = (x) => Math.round(x * 100) / 100;
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
@@ -451,7 +451,7 @@ export class SubSystem {
     it.spin += dt * (it.t < s.sprayFade ? 9 : 4.5);
     const spin = it.mesh.userData.spin;
     if (spin) spin.rotation.y = it.spin;
-    if (it.pulseT > 0) return;
+    if (it.pulseT > 0 || it.ghost) return;   // (a ghost's drops: its owner's arrive as ghost rounds)
     it.pulseT = s.pulse * (it.t < s.sprayFade ? 1 : 2);
     const n = it.normal;
     // a tangent frame on the mounting surface; drops fan out around it, lobbed away from the surface
@@ -595,7 +595,7 @@ export class SubSystem {
 
   // ---------------------------------------------------------------------------------------------- blocking + damage
   _hurt(it, dmg) {
-    if (it.state === 'dead') return;
+    if (it.state === 'dead' || netMuted()) return;   // (a ghost's hit: its owner's copy decides)
     if (it.ghost) {   // a remote player's device: its owner's copy takes the hit (and says when it's gone)
       netHurt(it.owner, 'subs', it.gid, dmg);
       if (it.state === 'curtain') it.hp -= dmg;   // (the curtain fades as it's hit)
@@ -648,6 +648,7 @@ export class SubSystem {
     return best;
   }
   damageArea(c, radius, dmg, team) {
+    if (netMuted()) return;   // a ghost's blast: the owner's own blast hurts devices (netHurt carries it to theirs)
     G.specials?.areaHit(c, radius, dmg, team);
     for (const k in SUB_KITS) SUB_KITS[k].damageArea?.(c, radius, dmg, team);   // kit subs caught in a blast (torpedo)
     for (const it of this.items) {
