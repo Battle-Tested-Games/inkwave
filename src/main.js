@@ -979,14 +979,14 @@ class Game {
     this.rig.overview();
     this.hud?.setVisible(true);
     const cov = m.result.coverage;
-    // Zone Control: the final countdowns (count + penalty, the HUD's "count +penalty" split), winner and how it was won
+    // Zone Control: the final counts (the scores) and each team's leftover penalty (shown apart, like the HUD's "+N"), winner and how it was won
     let zr = null;
     if (m.mode === 'zones' && m.zones && m.result.mode === 'zones') {
       const zs = m.zones.state();
-      zr = { counts: [...zs.count], penalty: [0, 1].map((t) => Math.max(0, zs.total[t] - zs.count[t])), totals: [...zs.total], winner: m.result.winner, reason: m.result.reason || 'time', overtime: !!m.result.overtime, overtimeT: zs.overtimeT };
+      zr = { counts: [...zs.count], penalty: zs.penalty.map((p) => Math.max(0, Math.ceil(p - 1e-6))), winner: m.result.winner, reason: m.result.reason || 'time', overtime: !!m.result.overtime, overtimeT: zs.overtimeT };
     }
     const judgeP = zr
-      ? this.hud?.judge({ mode: 'zones', colors: [G.teamHex[0], G.teamHex[1]], names: this.palette.names || TEAM_NAMES, counts: zr.counts, penalty: zr.penalty, totals: zr.totals, winner: zr.winner, reason: zr.reason, overtime: zr.overtime, percents: [cov[0] * 100, cov[1] * 100] })
+      ? this.hud?.judge({ mode: 'zones', colors: [G.teamHex[0], G.teamHex[1]], names: this.palette.names || TEAM_NAMES, counts: zr.counts, penalty: zr.penalty, winner: zr.winner, reason: zr.reason, overtime: zr.overtime, percents: [cov[0] * 100, cov[1] * 100] })
       : this.hud?.judge({ colors: [G.teamHex[0], G.teamHex[1]], percents: [cov[0] * 100, cov[1] * 100], names: this.palette.names || TEAM_NAMES });
     await (judgeP || new Promise((r) => setTimeout(r, 4000)));
     const myTeam = m.local ? m.local.team : 0;

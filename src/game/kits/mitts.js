@@ -830,6 +830,12 @@ MAIN_KITS.mitts = {
   update,
   jump,
   busy: (r) => !!(r.kit && r.kit.mitts && r.kit.leaping),
+  // leap armour: an incoming leap is otherwise picked off before it lands — mid-air (and on the landing beat) the kid
+  // takes W().leapArmor of any damage
+  damageTaken: (r, amount) => {
+    const k = r.kit && r.kit.mitts ? r.kit : null, w = W();
+    return k && (k.leaping || k.landT < (w.leapArmorGrace ?? 0.15)) ? amount * (w.leapArmor ?? 0.5) : amount;
+  },
   firingPose: (r) => { const k = r.kit && r.kit.mitts ? r.kit : null; return !!k && (k.charging || k.leaping || k.cling || k.landT < 0.35); },
   moveSpeed: (r, w) => {
     const k = r.kit && r.kit.mitts ? r.kit : null;

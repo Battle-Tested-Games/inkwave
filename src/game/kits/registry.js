@@ -11,6 +11,8 @@ import { G } from '../../core/ctx.js';
 //   spreadDeg?(runner, w)              current spread (feeds the reticle)
 //   tick?(dt) / clear?()               module-owned world objects (projectiles, shields …): once per frame / on match reset
 //   blockShot?(prev, pos, team, dmg) → bool   a shot segment prev→pos hits something this kit owns (e.g. a shield)
+//   damageTaken?(runner, amount, attacker, source) → amount   scale damage the wielder takes (actor.damage; e.g. the mitts'
+//                                      leap armour); ≤ 0 cancels the hit
 //   jump?(runner, intent) → bool       claim this frame's jump press (actor.js; e.g. the mitts' leap). runner.kit.hang
 //                                      (set by the kit) holds the kid in place (wall cling)
 //   bot?: { fight?(brain, ctx) → bool fire, paint?(brain, ctx) → bool fire, paintPitch?, melee?, charges?, long?, painter?,

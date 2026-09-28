@@ -4,13 +4,15 @@
 //   MODE=zones plays a full 5:00 (+ overtime) Zone Control match; MODE=turf plays SECS seconds of Turf War.
 //   WEAPONS / SUBS equip the 8 players (slot order = team 0 first): 'all=bow' · 'team0=blade;team1=shooter' ·
 //   'blade,blade,shooter,…' (per slot, blank = keep) · unset = the usual random loadouts.
+//   TRACK=<weapon> (+ TRACK_TEAM=0|1): a closer look at the players on that weapon (see trk below).
+//   TUNE='mitts.punchInterval=0.12,mitts.punchDamage=45': what-if tuning for this run only (WEAPONS / SUBS values).
 // Reports: stuck %, splats (by cause), per-weapon splats / deaths / turf, specials, super jumps, console errors, sim
 // cost, and in Zone Control the objective stats. Last line: RESULT_JSON {…} (also written to OUT if set).
 const { app } = require('electron');
 require(process.env.S + '/offscreen-boot.cjs');
 const MAP = process.env.MAP || 'halyard', MODE = process.env.MODE || 'zones', SECS = +(process.env.SECS || 180);
 const OUT = process.env.OUT || '';
-const WEAPONS = process.env.WEAPONS || '', SUBS = process.env.SUBS || '';
+const WEAPONS = process.env.WEAPONS || '', SUBS = process.env.SUBS || '', TRACK = process.env.TRACK || '', TRACK_TEAM = process.env.TRACK_TEAM ?? '', TUNE = process.env.TUNE || '';
 setTimeout(() => { console.log('WATCHDOG'); app.exit(1); setTimeout(() => process.exit(1), 3000); }, +(process.env.WATCHDOG || 900000));   // (hard exit if a hung page blocks quitting)
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 let claimed = false;
@@ -28,6 +30,11 @@ app.on('browser-window-created', (_, win) => {
     await js('window.__inkwave._onPointerUnlock = () => {}; 0');
     await js(`window.__inkwave.api.startMatch({ mapId: '${MAP}', mode: '${MODE}', duration: ${MODE === 'zones' ? 300 : SECS} })`);
     for (let i = 0; i < 240; i++) { if (await js(`window.__inkwave.match?.state === 'playing'`)) break; await wait(250); }
+    // what-if tuning (TUNE, see the header): patched into the live config before the loadouts
+    const tuned = TUNE ? await js(`(async () => { const C = await import('./src/config.js'); const out = [];
+      for (const kv of ${JSON.stringify(TUNE)}.split(',')) { const [path, v] = kv.split('='); const [id, key] = path.split('.'); const o = C.WEAPONS[id] || C.SUBS[id];
+        if (!o || !(key in o)) { out.push('?' + path); continue; } o[key] = isNaN(+v) ? v : +v; out.push(path + '=' + o[key]); }
+      return out.join(','); })()`) : '';
     // loadouts: WEAPONS / SUBS (see the header)
     const equip = await js(`(() => {
       const m = window.__inkwave.match, A = m.actors;
@@ -65,6 +72,77 @@ app.on('browser-window-created', (_, win) => {
       const eps = []; let holdS = 0; const roleS = {}; const frameErr = { n: 0, msg: '' }; const where = {}; let whereN = 0; const whereT = [{}, {}]; const farMode = {}; let ready = 0;
       offs.push(on('special:ready', () => ready++));
       const open = new Map();
+      // TRACK=<weapon id>: a closer look at every player on that weapon (damage in / out and from how far, what they were
+      // doing when splatted, how far the nearest enemy was; the mitts add fist / splash / landing damage and leaps)
+      const trk = ${JSON.stringify(TRACK)} ? (() => {
+        const TR = ${JSON.stringify(TRACK)}, T = { dmgOut: {}, dmgIn: 0, armour: 0, fired: 0, kills: 0, deaths: 0, alive: 0,
+          distOut: [], distIn: [], killDist: [], deathDist: [], deathState: {}, deathBy: {}, deathClean: 0, reach: [0, 0, 0, 0], fight: 0,
+          leaps: 0, leapKind: {}, leapHits: 0, leapKills: 0, clings: 0 };
+        const TT = ${JSON.stringify(TRACK_TEAM)}, is = (a) => a && a.weaponId === TR && (TT === '' || a.team === +TT);
+        const last = new Map();                       // "attacker>victim" → sim time of the last damage
+        const PJ = __G.projectiles, orig = PJ.applyHit;
+        let how = null;
+        PJ.applyHit = function (att, vic, dmg, src, ...rest) {
+          if (src === 'mitts' && is(att)) { const s = new Error().stack || ''; how = /landSplash|startCling/.test(s) ? 'leap' : /burstFist/.test(s) ? 'splash' : /updateFists/.test(s) ? 'fist' : 'mitts'; }
+          try { return orig.call(this, att, vic, dmg, src, ...rest); } finally { how = null; }
+        };
+        (async () => { try {
+          const { MAIN_KITS } = await import('./src/game/kits/registry.js'), K = MAIN_KITS[TR];
+          if (K && K.damageTaken) { const o = K.damageTaken; K.damageTaken = (r, amount, ...x) => { const v = o(r, amount, ...x); if (r && r.a && m.actors.includes(r.a)) T.armour += amount - v; return v; }; }
+        } catch (e) { /* no kit hook */ } })();
+        const d2 = (a, b) => Math.hypot(a.pos.x - b.pos.x, a.pos.z - b.pos.z), ix = (a) => m.actors.indexOf(a);
+        const leapBy = new Map();                       // actor → the leap in flight (for hits on landing)
+        offs.push(
+          on('damage', (e) => {
+            const A = e.attacker, V = e.victim;
+            if (is(A) && V !== A && A.team !== V.team) {
+              const k = how || String(e.source || '?');
+              T.dmgOut[k] = (T.dmgOut[k] || 0) + e.amount;
+              T.distOut.push(d2(A, V));
+              last.set(ix(A) + '>' + ix(V), simT);
+              if (how === 'leap') { const L = leapBy.get(A); if (L && !L.hit) { L.hit = true; T.leapHits++; } }
+            }
+            if (is(V) && A && A !== V && A.team !== V.team) { T.dmgIn += e.amount; T.distIn.push(d2(A, V)); }
+          }),
+          on('weapon:fire', (e) => { if (is(e.actor)) T.fired++; }),
+          on('mitts:leap', (e) => { if (!is(e.actor)) return; T.leaps++; T.leapKind[e.kind] = (T.leapKind[e.kind] || 0) + 1; leapBy.set(e.actor, { t: simT, hit: false }); }),
+          on('mitts:cling', (e) => { if (is(e.actor) && e.on) T.clings++; }),
+          on('splatted', (e) => {
+            const A = e.attacker, V = e.victim;
+            if (is(A) && V !== A) { T.kills++; T.killDist.push(d2(A, V)); if (e.cause === 'mitts') { const L = leapBy.get(A); if (L && simT - L.t < 3 && A.weaponRunner?.kit?.landT < 0.2) T.leapKills++; } }
+            if (!is(V)) return;
+            T.deaths++;
+            const k = V.weaponRunner && V.weaponRunner.kit && V.weaponRunner.kit.mitts ? V.weaponRunner.kit : null;
+            const st = k ? (k.charging ? 'charging' : k.leaping ? 'leaping' : k.cling ? 'clinging' : k.landT < 1 ? 'just landed' : V.form === 'squid' ? 'swimming' : 'on foot')
+              : V.form === 'squid' ? 'swimming' : 'on foot';
+            T.deathState[st] = (T.deathState[st] || 0) + 1;
+            const by = A && A !== V ? (e.cause === 'water' ? 'water' : A.weaponId + (e.cause && e.cause !== A.weaponId ? ':' + e.cause : '')) : String(e.cause || '?');
+            T.deathBy[by] = (T.deathBy[by] || 0) + 1;
+            if (A && A !== V) { T.deathDist.push(d2(A, V)); const lt = last.get(ix(V) + '>' + ix(A)); if (!(lt != null && simT - lt < 4)) T.deathClean++; }
+          }),
+        );
+        // per 0.25 s: how far the nearest living enemy is (reach buckets) and whether the bot is fighting
+        const sample = () => {
+          for (const a of m.actors) {
+            if (!is(a) || !a.alive) continue;
+            T.alive += 0.25;
+            let best = Infinity; for (const e of m.actors) if (e.team !== a.team && e.alive) best = Math.min(best, d2(a, e));
+            T.reach[best < 4.5 ? 0 : best < 8 ? 1 : best < 14 ? 2 : 3] += 0.25;
+            if (a.bot && a.bot.mode === 'fight') T.fight += 0.25;
+          }
+        };
+        const med = (xs) => { if (!xs.length) return null; const s = [...xs].sort((p, q) => p - q); return +s[s.length >> 1].toFixed(1); };
+        const done = () => ({
+          weapon: TR, n: m.actors.filter(is).length, team: [...new Set(m.actors.filter(is).map((a) => a.team))],
+          kills: T.kills, deaths: T.deaths, fired: T.fired, aliveS: +T.alive.toFixed(0), fightS: +T.fight.toFixed(0),
+          dmgOut: Object.fromEntries(Object.entries(T.dmgOut).map(([k, v]) => [k, Math.round(v)])), dmgIn: Math.round(T.dmgIn), armour: Math.round(T.armour),
+          distOut: med(T.distOut), distIn: med(T.distIn), killDist: med(T.killDist), deathDist: med(T.deathDist),
+          deathState: T.deathState, deathBy: T.deathBy, deathClean: T.deathClean,
+          reach: T.reach.map((v) => +(100 * v / Math.max(1, T.alive)).toFixed(0)),
+          leaps: T.leaps, leapKind: T.leapKind, leapHits: T.leapHits, leapKills: T.leapKills, clings: T.clings,
+        });
+        return { sample, done };
+      })() : null;
       const DT = 1 / 60, CH = 15;           // 0.25 s per chunk
       // per activation of an objective: the best ink share each team reached on each of its zones
       const wins = []; let curW = null;
@@ -81,6 +159,7 @@ app.on('browser-window-created', (_, win) => {
         for (let k = 0; k < CH; k++) { g._skipRender = !(render && k === CH - 1); try { g._frame(DT); } catch (e) { frameErr.n++; if (!frameErr.msg) frameErr.msg = String(e && e.stack || e).slice(0, 400); } }
         g._skipRender = false;
         simT += CH * DT;
+        if (trk && m.state === 'playing') trk.sample();
         // --- zone metrics
         if (Z && m.state === 'playing') {
           noteShares();
@@ -139,6 +218,7 @@ per: (() => { const A = m.actors, n = A.length || 1; const turf = A.reduce((s, a
           return { turf: Math.round(turf), zoneTurf: Math.round(zt), splats: +sp.toFixed(1), xpVar: Z ? Math.round(turf * 0.6 + zt + sp * 40) : Math.round(turf + sp * 40) }; })(),
         frameErr, eps: eps.sort((a, b) => b.dur - a.dur).slice(0, 6), holdPct: +(100 * holdS / Math.max(1, samples * 0.25)).toFixed(1),
         roles: Object.fromEntries(Object.entries(roleS).map(([k, v]) => [k, +(100 * v / Math.max(1, samples * 0.25)).toFixed(0)])),
+        track: trk ? trk.done() : undefined,
       };
       if (Z) Object.assign(res, {
         held: held.map((h) => +h.toFixed(1)), neutral: +neutral.toFixed(1), captures: flips, controlEvents: ev.control.length,
@@ -159,7 +239,7 @@ per: (() => { const A = m.actors, n = A.length || 1; const turf = A.reduce((s, a
     const wallS = ((Date.now() - t0) / 1000).toFixed(0);
     const perf = await js(`(() => { const p = window.__inkwave.perf; return p ? { cpuSimMs: +p.sim.toFixed(2) } : null; })()`);
     if (MODE === 'zones') {
-      console.log(`== ${MAP} [zones]: winner ${r.winner === 0 ? 'Alpha' : r.winner === 1 ? 'Bravo' : '-'} (${r.reason}) | final ${r.total[0]} vs ${r.total[1]} (count ${r.counts.join('/')}, penalty +${r.penalty.join('/+')}) | OT ${r.overtime ? r.overtimeT + 's' : 'no'}`);
+      console.log(`== ${MAP} [zones]: winner ${r.winner === 0 ? 'Alpha' : r.winner === 1 ? 'Bravo' : '-'} (${r.reason}) | final ${r.counts[0]} vs ${r.counts[1]} (penalty +${r.penalty.join('/+')}) | OT ${r.overtime ? r.overtimeT + 's' : 'no'}`);
       console.log(`   held A ${r.held[0]}s B ${r.held[1]}s neutral ${r.neutral}s | captures ${r.captures} (takeovers ${r.takeovers}), control events ${r.controlEvents}, first capture @${r.firstCapture}s | rotations ${r.rotations}`);
       console.log(`   teams: A [${r.teams[0]}] ${r.whereT[0]} | B [${r.teams[1]}] ${r.whereT[1]}`);
       console.log(`   bot-time: ${JSON.stringify(r.where)} (far by mode ${JSON.stringify(r.farMode)}) | specials ready ${r.ready}`);
@@ -169,14 +249,16 @@ per: (() => { const A = m.actors, n = A.length || 1; const turf = A.reduce((s, a
     console.log(`   per bot: turf ${r.per.turf}p, on-zone ink ${r.per.zoneTurf}p, splats ${r.per.splats} → XP beyond the win/lose base ≈ ${r.per.xpVar}`);
     console.log(`   stuck ${r.stuckPct}% | splats ${r.splats} (water ${r.water}) | specials ${r.specials} | super jumps ${r.jumps} | turf ${r.cov.join('/')} | sim ${r.simT}s in ${(r.simMs / 1000).toFixed(0)}s (wall ${wallS}s) | ${JSON.stringify(perf)}`);
     if (MODE === 'zones') { console.log('   penalties ' + JSON.stringify(r.penalties)); console.log('   control log ' + r.log); console.log('   best shares per activation ' + r.windows); console.log('   reachable cells ' + r.reach); }
-    console.log('   loadouts ' + equip);
+    console.log('   loadouts ' + equip + (tuned ? ' | TUNE ' + tuned : ''));
     console.log('   by weapon (players, splats dealt, deaths, avg turf) ' + Object.entries(r.byWeapon).map(([w, o]) => `${w}×${o.n} ${o.splats}/${o.deaths} ${o.turf}p`).join(' · '));
     console.log('   splats by cause ' + JSON.stringify(r.byCause));
     for (const e of r.eps) console.log('   stuck ' + JSON.stringify(e));
+    if (r.track) { const t = r.track; console.log(`   TRACK ${t.weapon}×${t.n} (team ${t.team}): ${t.kills} splats / ${t.deaths} deaths | damage out ${JSON.stringify(t.dmgOut)} in ${t.dmgIn} (armour saved ${t.armour}) | median dist: hits out ${t.distOut} m, hits in ${t.distIn} m, kills ${t.killDist} m, deaths ${t.deathDist} m`);
+      console.log(`         died while ${JSON.stringify(t.deathState)} | by ${JSON.stringify(t.deathBy)} | ${t.deathClean} deaths without touching the killer | nearest enemy <4.5/<8/<14/far m: ${t.reach.join('/')}% | fighting ${t.fightS}s of ${t.aliveS}s alive | fired ${t.fired}${t.leaps ? ` | leaps ${t.leaps} ${JSON.stringify(t.leapKind)}, hit on landing ${t.leapHits}, landing kills ${t.leapKills}, clings ${t.clings}` : ''}`); }
     if (r.frameErr.n) console.log(`   FRAME ERRORS ${r.frameErr.n}: ${r.frameErr.msg}`);
     const uniq = [...new Set(logs)];
     console.log(`CONSOLE ${uniq.length} unique warning/error line(s)`); for (const l of uniq.slice(0, 20)) console.log('  ' + l);
-    r.map = MAP; r.mode = MODE; r.loadouts = equip; r.consoleLines = uniq.length;
+    r.map = MAP; r.mode = MODE; r.loadouts = equip; r.tune = tuned; r.consoleLines = uniq.length;
     console.log('RESULT_JSON ' + JSON.stringify(r));
     if (OUT) require('fs').writeFileSync(OUT, JSON.stringify(r));
     app.quit();

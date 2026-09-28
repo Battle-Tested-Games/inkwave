@@ -249,6 +249,7 @@ export const WEAPONS = {
     moveSpeedFiring: 5.4,
     // charged leap: hold fire, press jump (hold to charge, release to leap along the aim; aim higher = higher arc)
     leapChargeTime: 0.7, leapInkMin: 15, leapInkMax: 25, moveSpeedCharging: 1.1,
+    leapArmor: 0.5, leapArmorGrace: 0.15,   // damage taken × leapArmor while in the air on a leap (and for leapArmorGrace s after landing)
     leapSpeedMin: 10.9, leapSpeedMax: 18.6,   // launch speed at 0 / full charge (≈ 4.5 m / 13 m on flat ground)
     leapAngle: 40, leapAngleMin: 18, leapAngleMax: 60, leapPitchK: 0.55, leapVyMax: 13,
     landRadius: 2.8, landDamageMax: 60, landDamageMin: 25, landPaint: 2.5,

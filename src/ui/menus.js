@@ -76,7 +76,7 @@ const TIPS = [
   'Hold [TAB] to open the big map and spot unpainted turf.',
   'Zone Control: ink 80% of the live zone to take it — 40% of theirs knocks it back to neutral.',
   'Zone Control: a side zone on their half counts you down 4× faster than the one on yours.',
-  'Zone Control: lose the zone to the other team and most of what you counted comes back as a penalty.',
+  'Zone Control: lose the zone to the other team and you get a penalty to count off before your count moves again.',
   'Zone Control: while they hold the zone your special charges fast. Team up and break their hold!',
 ];
 // Battle modes offered on the stage select (Zone Control: see src/game/zones.js)
@@ -2237,9 +2237,9 @@ export class Menus {
     ];
     const zoneRules = [
       ['take', 'Take the zone', 'Ink 80% of the live zone to take it. Ink 40% of a zone they hold to knock it back to neutral.'],
-      ['count', 'Count down from 100', 'Hold the zone and your count ticks down — 1 a second at the centre. First team to 0 wins.'],
+      ['count', 'Count down from 100', 'Hold the zone and your count ticks down — 1 a second at the centre. First to 0, or lowest count at time up, wins.'],
       ['rotate', 'Zones rotate', 'Every 30–60 s the live zone swaps between the centre and a side zone: 1 point per 2 s on your half, per ½ s on theirs.'],
-      ['penalty', 'Don’t lose it', 'If they take the zone from you, ¾ of what you counted since you took it comes back as a penalty.'],
+      ['penalty', 'Don’t lose it', 'If they take the zone from you, ¾ of what you counted since you took it becomes a penalty: your count won’t move until you count it off.'],
     ];
     const card = ([art, title, text], i, zones) => h('div', { class: 'iw-rule iw-in iw-in--pop', style: { '--tilt': `${[-1.2, 1, 0.8, -1][i]}deg` } },
       h('div', { class: 'iw-rule__art' + (zones ? ' is-zone' : ''), html: zones ? ZONE_RULE_ART[art] : RULE_ART[art] }),
@@ -3644,7 +3644,7 @@ export class Menus {
         let zones = null;
         if (m.mode === 'zones' && m.zones && m.zones.state) {
           const z = m.zones.state();
-          zones = { count: z.count, penalty: [0, 1].map((t) => Math.max(0, z.total[t] - z.count[t])), total: z.total, owner: z.owner, active: z.active, overtime: !!z.overtime, overtimeT: z.overtimeT };
+          zones = { count: z.count, penalty: z.penalty.map((p) => Math.max(0, Math.ceil(p - 1e-6))), owner: z.owner, active: z.active, overtime: !!z.overtime, overtimeT: z.overtimeT };
         }
         return {
           live: true, time: Math.max(0, +m.time || 0), duration: Math.max(1, +m.duration || 180), mode: modeOf(m.mode), zones,
@@ -3727,7 +3727,7 @@ export class Menus {
           x.num.textContent = String(z.count[t]);
           x.pen.textContent = z.penalty[t] > 0 ? `+${z.penalty[t]}` : '';
           x.el.classList.toggle('has-pen', z.penalty[t] > 0);
-          x.el.classList.toggle('is-ahead', z.total[t] < z.total[1 - t]);
+          x.el.classList.toggle('is-ahead', z.count[t] < z.count[1 - t]);   // the count is the score (not + penalty)
           x.el.classList.toggle('is-holding', z.owner === t);
         }
         const names = snap.names;
@@ -3941,13 +3941,14 @@ export class Menus {
         h('span', { class: 'ta' + (pa >= pb ? ' is-win' : '') }, pa >= pb ? crownA : null, names[0] || 'Alpha', numA),
         h('span', { class: 'tb' + (pb > pa ? ' is-win' : '') }, numB, names[1] || 'Bravo', pb > pa ? crownB : null)),
       coverBar);
-    // Zone Control: a race to the middle — each bar is how far that team counted down from 100 (hatched = the penalty
-    // it still had to count off); the numbers count down from 100 to the final count, then the penalty stamps on
+    // Zone Control: a race to the middle — each bar is how far that team counted down from 100 (the score; hatched block
+    // ahead of it = the penalty it still had to count off, not part of the score); the numbers count down from 100 to
+    // the final count, then the penalty stamps on
     let zc = null;
     if (zd) {
       const ZC = ZONES.count || 100, W = zd.winner === 1 ? 1 : 0;
-      const tot = zd.totals, cnt = zd.counts, pen = zd.penalty;
-      const done = (t) => clamp((ZC - tot[t]) / ZC) * 0.5, penW = (t) => clamp(Math.min(pen[t], ZC - (ZC - tot[t])) / ZC) * 0.5;
+      const cnt = zd.counts.map((c) => Math.max(0, Math.ceil(c - 1e-6))), pen = zd.penalty;
+      const done = (t) => clamp((ZC - cnt[t]) / ZC) * 0.5, penW = (t) => clamp(Math.min(pen[t], cnt[t]) / ZC) * 0.5;
       const pens = [0, 1].map((t) => h('em', { class: 'iw-zres__pen' + (pen[t] > 0 ? '' : ' is-none') }, `+${pen[t]}`));
       numA.textContent = String(ZC); numB.textContent = String(ZC);
       zc = { ZC, cnt, pens };

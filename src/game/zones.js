@@ -14,10 +14,12 @@
 //   • countdown: each team starts at 100. Holding the operational objective counts you down — 1 pt/s at the centre;
 //     a side zone on your own half 1 pt / 2 s; a side zone on the enemy's half (i.e. closer to THEIR spawn) 1 pt / 0.5 s.
 //     A team at 0 wins on the spot.
-//   • penalty: when a team loses the objective to the other team (not when it merely goes neutral), it gets
-//     ROUND(0.75 × (start − end)) + (start = 100 ? 1 : 0) added to its count, where start = its count (incl. penalty)
-//     when it took the objective from the other team, end = its count when the other team takes it. Penalty points
-//     are counted off before the main count.
+//   • penalty: when a team loses the objective to the other team (not when it merely goes neutral), it gets a penalty
+//     of ROUND(0.75 × (start − end)) + (start = 100 ? 1 : 0), where start = its count + penalty when it took the
+//     objective from the other team, end = its count + penalty when the other team takes it. The penalty is NOT part
+//     of the score: it's a lock that has to be counted off (holding the objective) before the count moves again.
+//   • score: the count alone — the lower count is ahead and wins at time up (a count of 1 with a +50 penalty beats
+//     2 +1); the penalty only decides how long the team has to hold before its count moves.
 //   • specials: while one team holds the objective, the other team's gauges fill at 4.5 p/s; while nobody holds it, the
 //     team that's behind fills at 1.5 p/s.
 //   • time (5 min) + overtime: see _timeUp / _overtime. The last 30 s (ZONES.finalCentre) and overtime are played on
@@ -31,7 +33,7 @@
 //   zones:active { objective, zones, final?, moved? } — a rotation; final: the last-30-s lock (moved: false when the
 //                  centre was already live and only the lock is announced)
 //   zones:contest { zone, holder, share } — the other team has inked a held zone up to ZONES.warn (≈ 30 %) of it
-//   zones:overtime { losing }  ·  zones:end { winner, reason, counts }
+//   zones:overtime { losing }  ·  zones:end { winner, reason, counts, penalty } (counts = the scores, penalty apart)
 //
 // ZONE_FORMAT (layout.zones):
 //   { center: [zone] | [zone, zone], side: zone }
@@ -131,6 +133,7 @@ export class ZoneControl {
     this._schedule();
     this.sampleT = 0;
     this.overtime = false; this.overtimeT = 0;
+    this.otLosing = -1;              // the team behind when overtime began (-1: level → sudden death)
     this.winner = null; this.reason = null;
     this.log = [];
     this.snapT = 0;
@@ -140,9 +143,11 @@ export class ZoneControl {
   get follower() { return !!this.match.follower; }
   _net(e) { if (!this.follower) G.netm?.recZone?.(e); }
 
+  // count + penalty: how much the team still has to count off to reach 0 (the penalty formula's start / end). NOT the
+  // score — who's ahead / wins is the count alone (losing())
   total(t) { return this.count[t] + this.penalty[t]; }
-  // the team currently behind (higher total), or -1 when level
-  losing() { const a = this.total(0), b = this.total(1); return a === b ? -1 : a > b ? 0 : 1; }
+  // the team currently behind (higher count; the penalty doesn't count), or -1 when level
+  losing() { const a = this.count[0], b = this.count[1]; return a === b ? -1 : a > b ? 0 : 1; }
   _swapDelay() { return ZONES.rotateMin + Math.random() * (ZONES.rotateMax - ZONES.rotateMin); }
   // the next rotation — none that would land in the last FINAL s (+ a short stint): from the centre there are none left;
   // from a side zone the final lock itself takes the objective back to the centre
@@ -217,8 +222,9 @@ export class ZoneControl {
     emit('zones:control', { owner: o, prev, objective: this.active.id });
   }
 
-  // ROUND(0.75 × (start − end)) + (start = 100 ? 1 : 0). If the team caught up to the other team's count during its
-  // stint (the tie point), progress past that tie isn't penalised: end = the count at the tie.
+  // ROUND(0.75 × (start − end)) + (start = 100 ? 1 : 0), start / end = count + penalty. If the team caught up to the
+  // other team's count during its stint (the tie point), progress past that tie isn't penalised: end = the count at the
+  // tie (its penalty was already counted off by then).
   _penalise(t) {
     const start = this.start[t];
     const end = this.tieEnd[t] != null ? Math.max(this.tieEnd[t], this.total(t)) : this.total(t);
@@ -233,12 +239,13 @@ export class ZoneControl {
     const obj = this.active;
     const rate = obj.home < 0 ? ZONES.rateCenter : obj.home === t ? ZONES.rateHome : ZONES.rateAway;
     let d = rate * dt;
-    const before = this.total(t), opp = this.total(1 - t);
+    const before = this.count[t], opp = this.count[1 - t];
     const fromPen = Math.min(this.penalty[t], d);
     this.penalty[t] -= fromPen; d -= fromPen;
     this.count[t] = Math.max(0, this.count[t] - d);
-    // the tie point: this team (behind at the start of its stint) has caught up with the other team's count
-    if (this.tieEnd[t] == null && this.start[t] > opp && before > opp && this.total(t) <= opp) this.tieEnd[t] = opp;
+    // the tie point: this team (behind) has caught up with the other team's count (the other count can't move during
+    // this team's stint, so behind now = behind at the start of it)
+    if (this.tieEnd[t] == null && before > opp && this.count[t] <= opp) this.tieEnd[t] = opp;
   }
 
   // (each client fills its own players' gauges: a remote player's special meter is its owner's)
@@ -309,7 +316,7 @@ export class ZoneControl {
     const L = this.losing();
     const grace = this.owner === -1 && this.lastOwner === L && this.neutralT < ZONES.overtimeGrace;
     if (L >= 0 && (this.owner === L || grace)) {
-      this.overtime = true; this.overtimeT = 0;
+      this.overtime = true; this.overtimeT = 0; this.otLosing = L;
       this._net(['zt', L]);
       emit('zones:overtime', { losing: L });
       return false;
@@ -325,18 +332,23 @@ export class ZoneControl {
     return true;
   }
 
-  // Overtime ends when: the losing team gets below the winning team (it wins); the losing team is off the objective for
+  // Overtime ends when: the losing team's count gets below the winning team's (it wins; its penalty is counted off first); the losing team is off the objective for
   // 10 s (two-zone centre: the winning team holds at least one zone neutral / theirs for 10 s); the winning team takes
   // the objective (both zones on a two-zone centre); or after 5 minutes.
   _overtime(dt) {
     this.overtimeT += dt;
-    const L = this.losing();
-    if (L < 0) {                                                          // sudden death from a tie
-      if (this.overtimeT >= ZONES.overtimeMax) this._end(this._tiebreak(), 'overtime-cap');
-      return;
+    // the team behind at the horn stays "L" (read live, it would flip the moment L's count passes W's and a comeback
+    // would end as a retake); sudden death from a tie: whoever falls behind first
+    let L = this.otLosing;
+    if (L < 0) {
+      L = this.losing();
+      if (L < 0) {                                                        // still level
+        if (this.overtimeT >= ZONES.overtimeMax) this._end(this._tiebreak(), 'overtime-cap');
+        return;
+      }
     }
     const W = 1 - L;
-    if (this.total(L) < this.total(W)) return this._end(L, 'comeback');
+    if (this.count[L] < this.count[W]) return this._end(L, 'comeback');
     if (this.owner === W) return this._end(W, 'retake');
     if (this.owner !== L && this.neutralT >= ZONES.overtimeGrace) return this._end(W, 'neutralised');
     if (this.overtimeT >= ZONES.overtimeMax) return this._end(W, 'overtime-cap');
@@ -352,7 +364,7 @@ export class ZoneControl {
     if (this.winner != null) return;
     this._net(['ze', winner, reason, r3(this.count[0]), r3(this.count[1]), r3(this.penalty[0]), r3(this.penalty[1])]);   // (the final numbers, exact)
     this.winner = winner; this.reason = reason;
-    emit('zones:end', { winner, reason, counts: [this.total(0), this.total(1)] });
+    emit('zones:end', { winner, reason, counts: [...this.count], penalty: [...this.penalty] });
     this.match.endZones?.(winner, reason);
   }
 

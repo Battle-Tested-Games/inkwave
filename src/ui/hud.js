@@ -922,8 +922,8 @@ export class HUD {
 
   // ================================================================ Zone Control (frame.zones + zones:* events)
   // frame.zones = ZoneControl.state() + { viewer } (main.js). Counters: team 0 on the left (self colours), team 1 on the
-  // right, each showing its count (ceil'd), a "+N" penalty badge and a bar that fills toward the timer as the team
-  // closes on 0 (the striped end = penalty still to count off). The chip under the timer names the operational
+  // right, each showing its count (ceil'd; the score), a "+N" penalty badge and a bar that fills toward the timer as the
+  // count closes on 0 (the striped block ahead of it = penalty to count off before the count moves again). The chip under the timer names the operational
   // objective (CENTRE / YOUR SIDE / ENEMY SIDE, relative to the viewer), colours each of its zones by holder and shows
   // each zone's live ink share (the ticks = the 80 % needed to take it); then the rotation hint or the OVERTIME badge.
   _zMe() { const a = this._local(); return a && (a.team === 0 || a.team === 1) ? a.team : 0; }
@@ -946,9 +946,9 @@ export class HUD {
     for (let t = 0; t < 2; t++) {
       const el = this.zc[t];
       if (!el._num) { el._num = el.querySelector('.iw-zc__num'); el._pb = el.querySelector('.iw-zc__pb'); }
-      // count and penalty as whole numbers that add up to the (ceil'd) total, like the judge and results
+      // count (the score) and penalty (apart: not part of the score) as whole numbers, like the judge and results
       const cnt = Math.max(0, Math.ceil((z.count?.[t] ?? 100) - 1e-6));
-      const pen = z.total ? Math.max(0, (z.total[t] | 0) - cnt) : Math.max(0, Math.ceil((z.penalty?.[t] ?? 0) - 1e-6));
+      const pen = Math.max(0, Math.ceil((z.penalty?.[t] ?? 0) - 1e-6));
       const hold = z.owner === t;
       const key = `${cnt}|${pen}|${hold ? 1 : 0}`, lk = 'zc' + t;
       if (L[lk] === key) continue;
@@ -957,7 +957,7 @@ export class HUD {
       el._num.textContent = String(cnt);
       if (pen > 0) el._pb.textContent = `+${pen}`;   // (keeps the last value while it fades out)
       el.classList.toggle('has-pen', pen > 0);
-      el.style.setProperty('--p', clamp((100 - cnt - pen) / 100).toFixed(3));
+      el.style.setProperty('--p', clamp((100 - cnt) / 100).toFixed(3));
       el.style.setProperty('--q', clamp(pen / 100).toFixed(3));
       el.classList.toggle('is-hold', hold);
       const tot = cnt + pen;
@@ -1007,8 +1007,8 @@ export class HUD {
     const ot = !!z.overtime;
     if (ot !== L.zOt) { L.zOt = ot; this.zo.classList.toggle('is-ot', ot); L.zG = null; }
     if (ot) {
-      const tot = z.total || [0, 0];
-      const lose = tot[0] === tot[1] ? -1 : tot[0] > tot[1] ? 0 : 1;
+      const c = z.count || [0, 0];
+      const lose = c[0] === c[1] ? -1 : c[0] > c[1] ? 0 : 1;
       const off = lose >= 0 && z.owner !== lose;
       const g = off ? clamp(1 - (z.neutralT || 0) / (ZONES.overtimeGrace || 10)) : 1;
       if (off !== L.zOff) { L.zOff = off; this.zo.classList.toggle('is-otoff', off); }
@@ -1056,7 +1056,7 @@ export class HUD {
   _zPenalty({ team, penalty }) {
     if (!this._zLive() || !(penalty > 0) || (team !== 0 && team !== 1)) return;
     const me = this._zMe();
-    this._zCall(`PENALTY +${Math.round(penalty)}`, { team, sub: team === me ? 'ADDED TO OUR COUNT' : 'ADDED TO THEIR COUNT', small: true, kind: 'pen' });
+    this._zCall(`PENALTY +${Math.round(penalty)}`, { team, sub: team === me ? 'WE COUNT IT OFF FIRST' : 'THEY COUNT IT OFF FIRST', small: true, kind: 'pen' });
     this._snd('zone_penalty', { volume: team === me ? 0.9 : 0.65, pitch: team === me ? 0.94 : 1.06 });
   }
   _zActive({ objective, final, moved }) {
@@ -1090,20 +1090,15 @@ export class HUD {
 
   // Zone Control result reveal: both counts roll down from 100 to where they finished, then the winner (a KNOCKOUT!
   // stamp when a team counted all the way down). Resolves after ≈ 3.8 s.
-  //   { mode: 'zones', colors, names, counts: [a, b], penalty: [a, b], totals?: [a, b], winner, reason, overtime }
-  //   with `totals`, counts are the bare counts (ZoneControl.state().count) and totals = count + penalty; without it,
-  //   counts are totals (as match.result.counts) and the penalty is split off them
-  _judgeZones({ colors = ['#ff8a14', '#2f5bff'], names = TEAM_NAMES, counts = [100, 100], penalty = [0, 0], totals = null, winner = null, reason = null, overtime = false } = {}) {
+  //   { mode: 'zones', colors, names, counts: [a, b], penalty: [a, b], winner, reason, overtime }
+  //   counts are the scores (ZoneControl.state().count / match.result.counts); penalty is what each team still had to
+  //   count off, shown apart (a hatched block ahead of the bar) — it isn't part of the score
+  _judgeZones({ colors = ['#ff8a14', '#2f5bff'], names = TEAM_NAMES, counts = [100, 100], penalty = [0, 0], winner = null, reason = null, overtime = false } = {}) {
     return new Promise((resolve) => {
       const ca = toHex(colors[0], '#ff8a14'), cb = toHex(colors[1], '#2f5bff');
-      const Z = G.match && G.match.zones;
       const whole = (v, d) => Math.max(0, Math.ceil((Number.isFinite(+v) ? +v : d) - 1e-6));
-      let cnt, tot;
-      if (totals) { cnt = [0, 1].map((t) => whole(counts?.[t], 100)); tot = [0, 1].map((t) => Math.max(cnt[t], whole(totals[t], cnt[t]))); }
-      else if (Z) { cnt = [0, 1].map((t) => whole(Z.count[t], 100)); tot = [0, 1].map((t) => Math.max(cnt[t], whole(Z.total(t), cnt[t]))); }
-      else { tot = [0, 1].map((t) => whole(counts?.[t], 100)); cnt = [0, 1].map((t) => Math.max(0, tot[t] - whole(penalty?.[t], 0))); }
-      const pen = [tot[0] - cnt[0], tot[1] - cnt[1]];
-      const win = winner === 0 || winner === 1 ? winner : tot[0] === tot[1] ? -1 : tot[0] < tot[1] ? 0 : 1;
+      const cnt = [0, 1].map((t) => whole(counts?.[t], 100)), pen = [0, 1].map((t) => whole(penalty?.[t], 0));
+      const win = winner === 0 || winner === 1 ? winner : cnt[0] === cnt[1] ? -1 : cnt[0] < cnt[1] ? 0 : 1;
       const ko = reason === 'knockout';
       const side = (t) => {
         const num = h('b', { class: 'iw-jz__num' }, '100');
@@ -1138,7 +1133,7 @@ export class HUD {
       const put = (S, t, k) => {
         const c = Math.round(lerp(100, cnt[t], k));
         if (c !== shown[t]) { shown[t] = c; S.num.textContent = String(c); }
-        const p = clamp((100 - lerp(100, tot[t], k)) / 100), q = clamp(pen[t] / 100) * k;
+        const p = clamp((100 - lerp(100, cnt[t], k)) / 100), q = Math.min(1 - p, clamp(pen[t] / 100) * k);
         S.fill.style.transform = `scaleX(${p.toFixed(4)})`;
         S.penBar.style.width = `${(q * 100).toFixed(2)}%`;
         S.penBar.style[t ? 'right' : 'left'] = `${(p * 100).toFixed(2)}%`;
