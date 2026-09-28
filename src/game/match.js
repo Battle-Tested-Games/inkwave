@@ -106,7 +106,7 @@ export class Match {
     this.follower = !o.host;
     for (const r of o.roster) {
       const mine = r.owner === me;
-      const a = new Actor({ team: r.team, slot: r.slot, weapon: r.weapon, isLocal: mine && !r.bot, isBot: r.bot, name: r.name, style: r.style || undefined, CharacterClass });
+      const a = new Actor({ team: r.team, slot: r.slot, weapon: r.weapon, sub: r.sub || null, special: r.special || null, isLocal: mine && !r.bot, isBot: r.bot, name: r.name, style: r.style || undefined, CharacterClass });
       a.nid = r.nid; a.owner = r.owner; a.remote = !mine;
       G.scene.add(a.character.root);
       if (mine && (r.bot || o.autopilot)) a.bot = new BotBrain(a, o.difficulty);

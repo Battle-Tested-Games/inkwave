@@ -19,7 +19,7 @@ G.net.isHost     // boolean
 G.net.error      // last error message (string) or null
 G.net.lobby = {
   map: 'tidewater', time: 'day' | 'dusk', duration: 180, bots: true, difficulty: 'normal',
-  players: [{ id, name, team: 0 | 1, weapon, style, ready, host, you, ping }],   // stable order: join order
+  players: [{ id, name, team: 0 | 1, weapon, sub, special, style, ready, host, you, ping }],   // stable order: join order
   maxPlayers: 8,
 }
 
@@ -27,7 +27,7 @@ G.net.lobby = {
 await G.net.create(name)          // → code; state goes connecting → lobby (you are host)
 await G.net.join(code, name)      // rejects with Error('Room not found' | 'Room is full' | 'Match in progress' | 'Could not connect')
 G.net.leave()                     // back to 'offline'
-G.net.setMe({ name, weapon, style, ready, team })   // any subset; team: 0 | 1 | 'auto'
+G.net.setMe({ name, weapon, sub, special, style, ready, team })   // any subset; team: 0 | 1 | 'auto'
 G.net.setSettings({ map, time, duration, bots, difficulty })   // host only
 G.net.canStart()                  // host: true when everyone present is ready (host counts as ready)
 G.net.start()                     // host only → state 'starting' for everyone, then 'match'
@@ -47,8 +47,9 @@ Rules the UI can rely on:
   also does it). When the match's results finish, everyone returns to the lobby screen with `state === 'lobby'`.
 - A player leaving mid-match is replaced by a bot on the same actor; if the host leaves, the room migrates to the next
   player (bots and clock move with it).
-- Your locker look (`profile.style`) and loadout weapon (`profile.weapon`) are sent automatically on join; call
-  `setMe` again when they change in the lobby.
+- Your locker look (`profile.style`) and loadout (`profile.weapon`, `.sub`, `.special`; a null sub / special means the
+  weapon's own) are sent automatically on join; call `setMe` again when they change in the lobby. Bots get a random sub /
+  special about half the time, as offline.
 
 ## How the netcode works (src/net/netmatch.js)
 

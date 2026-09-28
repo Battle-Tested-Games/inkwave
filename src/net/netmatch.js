@@ -150,6 +150,12 @@ export class NetMatch {
     this.s.tr?.sendTo(this.s.hostId, { k: 'bhit', a: attacker.nid, d: r2(d), weak: weak ? 1 : 0, w, c: crab });
   }
 
+  // a ghost device (a remote player's sprinkler, curtain, waddle …) took a hit here: its owner's copy takes it
+  sendDevHit(owner, kind, id, dmg) {
+    if (!owner || !owner.remote || owner.owner === undefined) return;
+    this.s.tr?.sendTo(owner.owner, { k: 'dh', kind, id, d: r2(dmg) });
+  }
+
   // hits land on the victim's owner right away (not on the playback timeline: health must be current)
   sendHit(attacker, victim, dmg, wid) {
     if (victim.owner === this.myId) return false;
@@ -198,6 +204,11 @@ export class NetMatch {
     switch (d.k) {
       case 't': this._tick(from, d); break;
       case 'hit': this._hit(d); break;
+      case 'dh': {   // a hit on one of our devices, made on another player's screen
+        const K = d.kind === 'subs' ? G.subs : SUB_KITS[d.kind] || MAIN_KITS[d.kind] || KIT_GHOSTS[d.kind];
+        try { K?.netHurt?.(d.id, d.d); } catch (err) { console.warn('[inkwave] device hit', d.kind, err); }
+        break;
+      }
       case 'bhit': if (this.isHost) this.match?.boss?.remoteHit(d); break;
       case 'st': if (from === this.s.hostId) this._hostState(d); break;
       case 'res': if (from === this.s.hostId) this._result(d); break;

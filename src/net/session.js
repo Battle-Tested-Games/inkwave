@@ -5,7 +5,7 @@
 // sends one roster to everyone; every client builds the stage, reports ready, and the host says go — so intros start
 // together. In the match NetMatch (netmatch.js) does the replication.
 import { G, emit } from '../core/ctx.js';
-import { MAPS, WEAPONS, WEAPON_ORDER, MATCH, BOT_NAMES, TEAM_PALETTES, mapNoBots, mapBossOk, bossFallbackMap, noBotsStartBlock } from '../config.js';
+import { MAPS, WEAPONS, WEAPON_ORDER, SUBS, SUB_ORDER, SPECIALS, SPECIAL_ORDER, MATCH, BOT_NAMES, TEAM_PALETTES, mapNoBots, mapBossOk, bossFallbackMap, noBotsStartBlock } from '../config.js';
 import { randomStyle } from '../game/character-style.js';
 import { Transport } from './transport.js';
 import { NetMatch } from './netmatch.js';
@@ -14,6 +14,8 @@ import { NetMatch } from './netmatch.js';
 // only mean a room code (28⁵ ≈ 17 M codes)
 const CODE_CHARS = 'BCEFGHJKLMNPQRTUVXYZ23456789';
 const TEAM = 4;
+// a loadout's sub / special: a known id, or null (= the weapon's own)
+const subOf = (id) => (SUBS[id] ? id : null), specialOf = (id) => (SPECIALS[id] ? id : null);
 
 export class NetSession {
   constructor() {
@@ -61,7 +63,7 @@ export class NetSession {
 
   _profile() {
     const p = G.game?.profile || {};
-    return { name: (p.name || 'Player').slice(0, 16), weapon: WEAPONS[p.weapon] ? p.weapon : 'shooter', style: p.style || null };
+    return { name: (p.name || 'Player').slice(0, 16), weapon: WEAPONS[p.weapon] ? p.weapon : 'shooter', sub: subOf(p.sub), special: specialOf(p.special), style: p.style || null };
   }
 
   // ------------------------------------------------------------------ rooms
@@ -99,12 +101,12 @@ export class NetSession {
     this.lobby = this._blankLobby();
     this._botsPref = this.isHost ? true : null;   // a new room fills with bots unless its stage forbids them
     if (this.isHost) {
-      this.lobby.players = [this._newPlayer(this.myId, name || me.name, { weapon: me.weapon, style: me.style })];
+      this.lobby.players = [this._newPlayer(this.myId, name || me.name, { weapon: me.weapon, sub: me.sub, special: me.special, style: me.style })];
       this._fixTeams();
     }
     this._setState('lobby');
     // tell the host who we are (the host already knows itself)
-    if (!this.isHost) tr.sendTo(this.hostId, { k: 'me', name: name || me.name, weapon: me.weapon, style: me.style });
+    if (!this.isHost) tr.sendTo(this.hostId, { k: 'me', name: name || me.name, weapon: me.weapon, sub: me.sub, special: me.special, style: me.style });
     this._pushLobby();
   }
 
@@ -163,7 +165,7 @@ export class NetSession {
   }
 
   _newPlayer(id, name, o) {
-    return { id, name: (name || 'Player').slice(0, 16), team: 'auto', weapon: WEAPONS[o.weapon] ? o.weapon : 'shooter', style: o.style || randomStyle(), ready: false, host: id === this.hostId, ping: 0 };
+    return { id, name: (name || 'Player').slice(0, 16), team: 'auto', weapon: WEAPONS[o.weapon] ? o.weapon : 'shooter', sub: subOf(o.sub), special: specialOf(o.special), style: o.style || randomStyle(), ready: false, host: id === this.hostId, ping: 0 };
   }
 
   // host: honour team requests while keeping ≤ 4 a side, then place everyone still on 'auto' on the smaller side
@@ -182,7 +184,7 @@ export class NetSession {
   }
   _wireLobby() {
     const l = this.lobby;
-    return { map: l.map, time: l.time, duration: l.duration, bots: l.bots, difficulty: l.difficulty, palette: l.palette, mode: l.mode, players: l.players.map(({ id, name, team, weapon, style, ready, ping }) => ({ id, name, team, weapon, style, ready, ping })) };
+    return { map: l.map, time: l.time, duration: l.duration, bots: l.bots, difficulty: l.difficulty, palette: l.palette, mode: l.mode, players: l.players.map(({ id, name, team, weapon, sub, special, style, ready, ping }) => ({ id, name, team, weapon, sub, special, style, ready, ping })) };
   }
   // local view: mark you + host
   _pushLobby() {
@@ -196,6 +198,8 @@ export class NetSession {
     const o = {};
     if (ch.name != null) o.name = String(ch.name).slice(0, 16);
     if (ch.weapon && WEAPONS[ch.weapon]) o.weapon = ch.weapon;
+    if (ch.sub !== undefined) o.sub = subOf(ch.sub);
+    if (ch.special !== undefined) o.special = specialOf(ch.special);
     if (ch.style) o.style = ch.style;
     if (ch.ready != null) o.ready = !!ch.ready;
     if (ch.team === 0 || ch.team === 1 || ch.team === 'auto') o.team = ch.team;
@@ -203,7 +207,7 @@ export class NetSession {
     else {
       // optimistic local echo for things the host won't refuse
       const me = this.lobby.players.find((p) => p.id === this.myId);
-      if (me) { for (const k of ['name', 'weapon', 'style', 'ready']) if (o[k] !== undefined) me[k] = o[k]; this._pushLobby(); }
+      if (me) { for (const k of ['name', 'weapon', 'sub', 'special', 'style', 'ready']) if (o[k] !== undefined) me[k] = o[k]; this._pushLobby(); }
       this.tr.sendTo(this.hostId, { k: 'me', ...o });
     }
   }
@@ -213,6 +217,8 @@ export class NetSession {
     if (!p) return;
     if (o.name) p.name = o.name;
     if (o.weapon && WEAPONS[o.weapon]) p.weapon = o.weapon;
+    if (o.sub !== undefined) p.sub = subOf(o.sub);
+    if (o.special !== undefined) p.special = specialOf(o.special);
     if (o.style) p.style = o.style;
     if (o.ready != null) p.ready = !!o.ready;
     if (o.ping != null) p.ping = Math.round(o.ping);
@@ -269,12 +275,15 @@ export class NetSession {
       const humans = boss ? l.players : l.players.filter((p) => p.team === team);
       const weapons = [...WEAPON_ORDER].sort(() => Math.random() - 0.5);
       let slot = 0;
-      for (const p of humans) roster.push({ nid: nid++, owner: p.id, bot: false, team, slot: slot++, name: p.name, weapon: p.weapon, style: p.style });
+      for (const p of humans) roster.push({ nid: nid++, owner: p.id, bot: false, team, slot: slot++, name: p.name, weapon: p.weapon, sub: subOf(p.sub), special: specialOf(p.special), style: p.style });
       if (bots) {
         while (slot < (boss ? TEAM * 2 : TEAM)) {
           const used = new Set(roster.filter((r) => r.team === team).map((r) => r.weapon));
           const wpn = weapons.find((w) => !used.has(w)) || weapons[slot % weapons.length];
-          roster.push({ nid: nid++, owner: this.myId, bot: true, team, slot: slot++, name: names.pop() || 'Bot', weapon: wpn, style: randomStyle() });
+          // bots carry a random sub / special about half the time, as offline (else their weapon's own)
+          const sub = Math.random() < 0.5 ? null : SUB_ORDER[(Math.random() * SUB_ORDER.length) | 0];
+          const special = Math.random() < 0.5 ? null : SPECIAL_ORDER[(Math.random() * SPECIAL_ORDER.length) | 0];
+          roster.push({ nid: nid++, owner: this.myId, bot: true, team, slot: slot++, name: names.pop() || 'Bot', weapon: wpn, sub, special, style: randomStyle() });
         }
       }
     }

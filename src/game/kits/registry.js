@@ -49,6 +49,7 @@ import { G } from '../../core/ctx.js';
 //                                      (netmatch mutes paint while ghost() runs; the kit keeps muting in its own tick for
 //                                      ghost objects) and never hurts (a remote attacker's hits are dropped). Shields /
 //                                      curtains stay solid (they block the local player's shots like the owner's do).
+//   netHurt?(id, dmg)                  the owner's side of a device hit made on another screen (registry netHurt)
 //   MAIN_KITS only: netState?(runner) → int   the pose / state bits other screens need (packed each tick)
 //                   netApply?(runner, bits, dt)   a remote runner: rebuild runner.kit from those bits
 // KIT_GHOSTS[kind] = { ghost } — ghost-only entries for things that aren't a main or sub kit (e.g. a special's objects)
@@ -57,6 +58,12 @@ export const SUB_KITS = {};
 export const KIT_GHOSTS = {};
 // the local owner records a spawn for the other players (no-op offline / for remote actors)
 export function netRec(actor, kind, data) { G.netm?.recKit?.(actor, kind, data); }
+// a network id for an owner's world object (its ghosts carry the same id): owner nid × 1e5 + a per-session sequence
+let _seq = 0;
+export function netId(owner) { return owner && owner.nid !== undefined ? owner.nid * 100000 + (++_seq % 100000) : 0; }
+// a non-owner damaged a ghost device (a remote player's sprinkler, curtain, waddle …): the owner's copy takes it.
+// (kind: 'subs' for SubSystem items, else the kit kind — its netHurt(id, dmg) applies it on the owner's screen)
+export function netHurt(owner, kind, id, dmg) { if (id && dmg > 0) G.netm?.sendDevHit?.(owner, kind, id, dmg); }
 // run fn with paint muted when obj is a ghost (a remote player's copy): its splats are the owner's to send
 export function ghostMute(obj, fn) {
   const nm = obj && obj.ghost ? G.netm : null;

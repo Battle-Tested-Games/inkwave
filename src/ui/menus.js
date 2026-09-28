@@ -2388,6 +2388,9 @@ export class Menus {
     const prof = this._profile(), lo = this._loadout(), style = this._style();
     const ch = {};
     if (lo.weapon && lo.weapon !== me.weapon) ch.weapon = lo.weapon;
+    // sub / special: the profile's own pick (null = the weapon's), so a weapon swap keeps its default kit
+    if ((prof.sub || null) !== (me.sub || null)) ch.sub = prof.sub || null;
+    if ((prof.special || null) !== (me.special || null)) ch.special = prof.special || null;
     if (prof.name && prof.name !== me.name) ch.name = prof.name;
     const a = me.style || {}, keys = new Set([...Object.keys(a), ...Object.keys(style)]);
     for (const k of keys) if (a[k] !== style[k]) { ch.style = { ...style }; break; }

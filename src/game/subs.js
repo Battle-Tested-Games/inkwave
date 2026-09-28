@@ -18,7 +18,8 @@ import { SUBS, PLAYER } from '../config.js';
 import { Physics, Hit } from './physics.js';
 import { getSubDef } from './character-weapons.js';
 import { getPlasticMaterial, getInkMaterial } from './character-mats.js';
-import { MAIN_KITS, SUB_KITS } from './kits/registry.js';
+import { MAIN_KITS, SUB_KITS, KIT_GHOSTS, netRec, netId, netHurt } from './kits/registry.js';
+const r2 = (x) => Math.round(x * 100) / 100;
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0);
@@ -48,6 +49,8 @@ const CURTAIN_FS = `
     gl_FragColor = vec4(c, a);
   }`;
 
+KIT_GHOSTS.subs = { ghost: (a, d) => G.subs?.netGhost(a, d) };
+
 export class SubSystem {
   constructor(scene) {
     this.scene = scene;
@@ -68,19 +71,26 @@ export class SubSystem {
   use(a, sub) {
     if (SUB_KITS[sub.kind]) return SUB_KITS[sub.kind].use(this, a, sub);   // kit subs (kits/*.js)
     if (sub.placed) return this._place(a, sub);
-    const mesh = this._prop(sub.kind, a.team);
     const pos = a.pos.clone(); pos.y += 1.35;
     const vel = G.projectiles.throwVelocity(a, sub.throwSpeed, new THREE.Vector3());
+    const it = this._throw(a, sub, pos, vel, false);
+    netRec(a, 'subs', [0, it.gid, sub.kind, r2(pos.x), r2(pos.y), r2(pos.z), r2(vel.x), r2(vel.y), r2(vel.z)]);
+    emit('sub:use', { actor: a, kind: sub.kind });
+  }
+  // a thrown sub in flight (ghost: a remote player's, online — see netGhost)
+  _throw(a, sub, pos, vel, ghost, gid = 0) {
+    const mesh = this._prop(sub.kind, a.team);
     mesh.position.copy(pos);
     mesh.userData.inner.position.y = -mesh.userData.lift;   // tumble about the middle while flying
     this.scene.add(mesh);
-    this.items.push({ sp: !!a.specialActive,   // thrown during a special (Bomb Barrage): its ink never charges the meter
-      kind: sub.kind, sub, owner: a, team: a.team, mesh, pos, vel, state: 'fly', age: 0, t: 0,
+    const it = { sp: !!a.specialActive,   // thrown during a special (Bomb Barrage): its ink never charges the meter
+      kind: sub.kind, sub, owner: a, team: a.team, mesh, pos: pos.clone(), vel: vel.clone(), state: 'fly', age: 0, t: 0,
       spinV: new THREE.Vector3(3 + Math.random() * 6, 3 + Math.random() * 6, 0),
-      dir: new THREE.Vector3(vel.x, 0, vel.z).normalize(),
-    });
+      dir: new THREE.Vector3(vel.x, 0, vel.z).normalize(), ghost, gid: gid || netId(a),
+    };
+    this.items.push(it);
     if (a.isLocal || a._nearCamera()) G.audio?.play('bomb_throw', { pos: a.isLocal ? undefined : a.pos, volume: 0.65, pitch: sub.kind === 'burst' ? 1.2 : 1 });
-    emit('sub:use', { actor: a, kind: sub.kind });
+    return it;
   }
 
   _place(a, sub) {
@@ -89,18 +99,23 @@ export class SubSystem {
     // per-player limits: mines — the oldest beyond the limit goes off; beacons — the oldest is removed
     const mine = this.items.filter((it) => it.owner === a && it.kind === sub.kind && it.state !== 'dead').sort((x, y) => x.born - y.born);
     while (mine.length >= sub.max) { const old = mine.shift(); if (sub.kind === 'mine') this._mineBlast(old); else this._destroy(old); }
+    const it = this._plant(a, sub, g.point, g.normal, a.yaw, g, false);
+    netRec(a, 'subs', [1, it.gid, sub.kind, r2(it.pos.x), r2(it.pos.y), r2(it.pos.z), r2(g.normal.x), r2(g.normal.y), r2(g.normal.z), r2(a.yaw)]);
+    emit('sub:use', { actor: a, kind: sub.kind, pos: it.pos.clone() });
+  }
+  // a placed device (mine / beacon) on the floor at pos (g: the floor hit, for the ink under it; ghost: see netGhost)
+  _plant(a, sub, pos, normal, yaw, g, ghost, gid = 0) {
     const mesh = this._prop(sub.kind, a.team);
-    const pos = g.point.clone();
     mesh.position.copy(pos);
-    mesh.quaternion.setFromUnitVectors(UP, g.normal);
-    mesh.rotateY(a.yaw);
+    mesh.quaternion.setFromUnitVectors(UP, normal);
+    mesh.rotateY(yaw);
     this.scene.add(mesh);
-    const it = { kind: sub.kind, sub, owner: a, team: a.team, mesh, pos, state: sub.kind, age: 0, t: 0, born: G.time, normal: g.normal.clone(), sp: !!a.specialActive,
-      face: g.face, u: g.u, v: g.v, hp: sub.hp || 1, uses: sub.uses || 0 };
+    const it = { kind: sub.kind, sub, owner: a, team: a.team, mesh, pos: pos.clone(), state: sub.kind, age: 0, t: 0, born: G.time, normal: normal.clone(), sp: !!a.specialActive,
+      face: g ? g.face : -1, u: g ? g.u : 0, v: g ? g.v : 0, hp: sub.hp || 1, uses: sub.uses || 0, ghost, gid: gid || netId(a) };
     this.items.push(it);
     if (sub.kind === 'mine') this._paintUnder(it, 1.1);
     if (a.isLocal || a._nearCamera()) G.audio?.play('bomb_beep', { pos: a.isLocal ? undefined : a.pos, volume: 0.5, pitch: sub.kind === 'beacon' ? 1.3 : 0.8 });
-    emit('sub:use', { actor: a, kind: sub.kind, pos: pos.clone() });
+    return it;
   }
 
   // prop meshes: an outer node (world transform) → inner (offset while flying so it tumbles about its middle) → model
@@ -139,10 +154,21 @@ export class SubSystem {
   // ---------------------------------------------------------------------------------------------- per frame
   update(dt) {
     for (const k in SUB_KITS) SUB_KITS[k].tick?.(dt);   // kit subs' own objects
-    const items = this.items;
+    const items = this.items, nm = G.netm;
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
       it.age += dt; it.t += dt;
+      const gm = it.ghost && nm;   // (a ghost's splats are its owner's to send; its hits are dropped as a remote's)
+      if (gm) nm.mute++;
+      try { this._step(it, dt); } finally { if (gm) nm.mute--; }
+      if (it.state === 'dead') {
+        if (!it.ghost && it.gid) netRec(it.owner, 'subs', [2, it.gid]);
+        this._dispose(it); items.splice(i, 1);
+      }
+    }
+  }
+  _step(it, dt) {
+    {
       switch (it.state) {
         case 'fly': this._fly(it, dt); break;
         case 'stuck': this._stuck(it, dt); break;
@@ -154,8 +180,40 @@ export class SubSystem {
         case 'mine': this._mine(it, dt); break;
         case 'beacon': this._beacon(it, dt); break;
       }
-      if (it.state === 'dead') { this._dispose(it); items.splice(i, 1); }
     }
+  }
+
+  // ---------------------------------------------------------------------------------------------- online
+  // A remote player's subs: its throws / placements arrive as kit records (KIT_GHOSTS.subs → netGhost) and play out here
+  // as ghosts — same flight, sticking, clouds, curtains (solid: they block the local player's shots and push the local
+  // kid back), sprinklers, beacons (a teammate can jump to one) — with paint muted and hits dropped (the owner's arrive
+  // apart). A ghost mine never goes off by itself: its owner decides (the end record). Damage the local player does to
+  // a ghost device goes to its owner (netHurt); the owner's end record ends a ghost still standing.
+  netGhost(a, d) {
+    if (!Array.isArray(d)) return;
+    const [op, gid] = d;
+    if (op === 2) {
+      const it = this.items.find((x) => x.ghost && x.gid === gid && x.state !== 'dead');
+      if (!it) return;
+      if (it.kind === 'mine') this._mineBlast(it);
+      else if (it.state === 'stuck' || it.state === 'run') this._blast(it, _v.copy(it.pos).setY(it.pos.y + 0.2), it.sub.radius, it.sub.damageMax, it.sub.damageMin, it.sub.paintRadius, it.normal || UP);
+      else this._destroy(it);
+      it.state = 'dead';
+      return;
+    }
+    const sub = SUBS[d[2]];
+    if (!sub || this.items.some((x) => x.gid === gid)) return;
+    if (op === 0) this._throw(a, sub, _v.set(d[3], d[4], d[5]), _v2.set(d[6], d[7], d[8]), true, gid);
+    else if (op === 1) {
+      const n = _v2.set(d[6], d[7], d[8]);
+      const g = G.physics.raycast(_v3.set(d[3], d[4] + 0.4, d[5]), DOWN, 1.2, _hit);
+      this._plant(a, sub, _v.set(d[3], d[4], d[5]), n, d[9], g.hit ? g : null, true, gid);
+    }
+  }
+  // the owner's side of a hit on one of its devices, made on another screen
+  netHurt(gid, dmg) {
+    const it = this.items.find((x) => !x.ghost && x.gid === gid && x.state !== 'dead');
+    if (it) this._hurt(it, dmg);
   }
 
   _fly(it, dt) {
@@ -413,6 +471,7 @@ export class SubSystem {
 
   // ---- lurk mine: hidden in its owner's ink; an enemy coming close sets it off (damage + tracking)
   _mine(it, dt) {
+    if (it.ghost) return;   // (a remote player's mine goes off when its owner says: netGhost)
     const s = it.sub;
     const loc = G.local;
     const inOwnInk = it.face >= 0 && G.paint.sample(it.face, it.u, it.v) - 1 === it.team;
@@ -537,6 +596,11 @@ export class SubSystem {
   // ---------------------------------------------------------------------------------------------- blocking + damage
   _hurt(it, dmg) {
     if (it.state === 'dead') return;
+    if (it.ghost) {   // a remote player's device: its owner's copy takes the hit (and says when it's gone)
+      netHurt(it.owner, 'subs', it.gid, dmg);
+      if (it.state === 'curtain') it.hp -= dmg;   // (the curtain fades as it's hit)
+      return;
+    }
     it.hp -= dmg;
     if (it.state === 'curtain') return;               // curtains fade instead; _curtain removes them at 0
     if (it.hp <= 0) this._destroy(it);
