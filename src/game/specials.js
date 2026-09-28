@@ -12,12 +12,13 @@
 // this.world and update in update(dt).
 import * as THREE from 'three';
 import { G, emit, on, clamp, lerp, angleDiff } from '../core/ctx.js';
-import { SPECIALS, SUBS, PLAYER } from '../config.js';
+import { SPECIALS, SPECIAL_ORDER, SUBS, PLAYER } from '../config.js';
 import { Physics, Hit } from './physics.js';
 import { getWeaponDef } from './character-weapons.js';
 import { getPlasticMaterial, getInkMaterial } from './character-mats.js';
 import { rumble } from './actor.js';
 import { SPECIAL_ICONS } from '../ui/ui-icons.js';
+import { KIT_GHOSTS, netRec, netId, netHurt, netMuted, ghostMute } from './kits/registry.js';
 
 // world props for the big specials (kraken, speaker, missile, jetpack, crab) — optional until they exist
 let PROPS = null;
@@ -29,6 +30,16 @@ const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0);
 const _hit = new Hit(), _hit2 = new Hit();
 const _res = { t: 0, dist: 0 };
 const TAU = Math.PI * 2;
+
+// ---- online (see SpecialSystem.netGhost): the owner records its special as ['k', nid, 'sp', data] —
+//   [0, index in SPECIAL_ORDER] start · [1, reason] end · [2, kind, gid, …] a world object (missile, twister, speaker,
+//   bubble, thrown stamp, shell, orb) · [3, gid, what] a world object's event · [4, what, …] a running special's moment
+// Everyone else plays it on that player as a ghost: the props / transformation / held things, visual-only (paint muted,
+// hits dropped); continuous damage (tornado, sound beam) is each client's own, on its own players.
+const r2 = (x) => Math.round(x * 100) / 100;
+const v3 = (v) => [r2(v.x), r2(v.y), r2(v.z)];
+const V = (d, i) => new THREE.Vector3(d[i], d[i + 1], d[i + 2]);
+const rec = (a, d) => netRec(a, 'sp', d);
 
 const near = (p, r = 32) => !!G.camera && G.camera.position.distanceToSquared(p) < r * r;
 const hearable = (a) => a.isLocal || a._nearCamera();
@@ -66,8 +77,9 @@ function blast(owner, team, c, radius, dmgMax, dmgMin, weaponId, killRadius = 0)
   G.boss?.splash(owner, c, radius, dmgMax, dmgMin, weaponId);   // Boss Battle
 }
 // continuous damage (tornado, sound beam): no per-frame hit events, only the splat
+// (online: each client applies it to its own players — from a ghost's tornado / speaker too, as the Ink Tempest does)
 function tickDamage(owner, e, dmg, weaponId) {
-  if (!e.alive || e.team === owner.team) return;
+  if (!e.alive || e.team === owner.team || e.remote) return;
   const killed = e.damage(dmg, owner, weaponId);
   if (killed) emit('hit', { attacker: owner, victim: e, damage: dmg, killed: true, weaponId });
 }
@@ -244,9 +256,74 @@ export class SpecialSystem {
     // `kind` picks the behaviour (the Bomb Barrage variants all share 'barrage')
     const s = { id, kind: def.kind || id, def, t: 0, dur: def.duration || 0 };
     a.specialActive = s;
+    rec(a, [0, SPECIAL_ORDER.indexOf(id)]);
     const impl = IMPL[s.kind];
     impl?.start?.call(this, a, s);
     emit('special:start', { actor: a, id });
+  }
+
+  // ---------------------------------------------------------------------------------------------- online
+  // a remote player's special, from its owner's records (see the note at the top)
+  netGhost(a, d) {
+    if (!Array.isArray(d)) return;
+    switch (d[0]) {
+      case 0: { const id = SPECIAL_ORDER[d[1]]; if (id && SPECIALS[id]) this._startGhost(a, id); break; }
+      case 1: if (a.specialActive?.ghost) this.end(a, d[1] || 'net'); break;
+      case 2: this._ghostObj(a, d); break;
+      case 3: { const w = this.world.find((x) => x.ghost && x.gid === d[1] && !x.dead); if (w) w.netEvent?.(d); break; }
+      case 4: { const s = a.specialActive; if (s?.ghost) GHOST[s.kind]?.event?.call(this, a, s, d); break; }
+    }
+  }
+  _startGhost(a, id) {
+    if (a.specialActive?.ghost) this.end(a, 'net');   // (one that never heard its end)
+    const def = SPECIALS[id];
+    const s = { id, kind: def.kind || id, def, t: 0, dur: def.duration || 0, ghost: true };
+    a.specialActive = s;
+    const g = GHOST[s.kind], f = g && 'start' in g ? g.start : IMPL[s.kind]?.start;
+    try { f?.call(this, a, s); } catch (e) { console.warn('[specials] ghost start', id, e); }
+    emit('special:start', { actor: a, id });
+  }
+  // per frame: remote players' specials (visuals only; their owners move them)
+  _ghostTick(dt) {
+    for (const a of G.actors) {
+      const s = a.specialActive;
+      if (!a.remote || !s || !s.ghost) continue;
+      if (!a.alive) { this.end(a, 'splat'); continue; }
+      s.t += dt;
+      s.firing = Math.max(0, (s.firing || 0) - dt);
+      this._endCue(a, s);
+      const f = GHOST[s.kind]?.tick;
+      if (f) ghostMute(s, () => f.call(this, a, s, dt));
+    }
+  }
+  // the owner's world object: in the world, with an id, recorded for everyone else
+  _spawn(a, w, kind, data) {
+    this.world.push(w);
+    w.gid = netId(a);
+    if (w.gid) rec(a, [2, kind, w.gid, ...data]);
+    return w;
+  }
+  _ghostObj(a, d) {
+    const [, kind, gid] = d;
+    if (this.world.some((x) => x.gid === gid)) return;
+    let w = null;
+    switch (kind) {
+      case 'mi': w = new Missile(this, a, V(d, 3)); break;
+      case 'tw': w = new Twister(this, a, V(d, 3), V(d, 6)); break;
+      case 'sk': w = new Speaker(this, a, V(d, 3), V(d, 6)); break;
+      case 'bu': w = new Bubble(this, a); w.pos.copy(V(d, 3)); w.r = d[6]; w.release(V(d, 7)); break;
+      case 'ts': w = new ThrownStamp(this, a, V(d, 3), V(d, 6)); break;
+      case 'sh': w = new Shell(this, a, V(d, 3), V(d, 6)); break;
+      case 'or': w = new Orb(this, a, V(d, 3), V(d, 6)); break;
+    }
+    if (!w) return;
+    w.ghost = true; w.gid = gid;
+    this.world.push(w);
+  }
+  // a hit on one of our world objects made on another screen (bubbles: dmg < 0 = its own team's ink)
+  netHurtObj(gid, dmg) {
+    const w = this.world.find((x) => !x.ghost && x.gid === gid && !x.dead);
+    if (w && w.kind === 'bubble') this._bubbleHit(w, dmg < 0 ? w.team : 1 - w.team, Math.abs(dmg), null);
   }
   // transformation specials: a "wearing off" jingle ~2 s before the time runs out (loud for you, positional for others)
   _endCue(a, s) {
@@ -287,12 +364,14 @@ export class SpecialSystem {
     const s = a.specialActive;
     if (!s || s.ended || s.id === 'slam' || s.id === 'storm') return;
     s.ended = true;
+    if (!s.ghost) rec(a, [1, reason]);
     IMPL[s.kind]?.end?.call(this, a, s, reason);
     if (a.specialActive === s) a.specialActive = null;
     emit('special:end', { actor: a, id: s.id, reason });
     if (reason === 'time' && hearable(a)) play('special_end', { pos: a.isLocal ? undefined : a.pos, volume: a.isLocal ? 0.7 : 0.45 });
-    // jetpack / zipline: super jump back to where the special started
-    if (s.jumpBack && reason !== 'splat' && a.alive && s.origin && a.pos.distanceTo(s.origin) > 2.5 && a.superJump(s.origin.clone(), { instant: true, home: true })) s.marker?.returning();
+    // jetpack / zipline: super jump back to where the special started (a ghost's owner jumps; its marker greys out)
+    if (s.ghost) { if (s.jumpBack && reason === 'time' && a.alive) s.marker?.returning(); else s.marker?.finish(); }
+    else if (s.jumpBack && reason !== 'splat' && a.alive && s.origin && a.pos.distanceTo(s.origin) > 2.5 && a.superJump(s.origin.clone(), { instant: true, home: true })) s.marker?.returning();
     else s.marker?.finish();
   }
   onSplat(a) {
@@ -392,8 +471,9 @@ export class SpecialSystem {
 
   // a bubble hit: your team's ink charges it until it blows; enemy ink is soaked up (and shrinks it a little)
   _bubbleHit(w, team, dmg, owner) {
-    if (w.dead) return;
+    if (w.dead || netMuted()) return;   // (a ghost's shot: its owner's copy decides)
     w.mesh.material.uniforms.uHit.value = 0.5;
+    if (w.ghost) { if (!(team === w.team && w.held)) netHurt(w.owner, 'sp', w.gid, team === w.team ? -dmg : dmg); return; }
     const d = SPECIALS.blower;
     if (team === w.team) {
       if (w.held) return;
@@ -481,10 +561,11 @@ export class SpecialSystem {
       }
       if (a.status.shield <= 0) this._dropShield(a, true);
     }
-    // world objects
+    this._ghostTick(dt);
+    // world objects (a ghost's: paint muted, hits dropped)
     for (let i = this.world.length - 1; i >= 0; i--) {
       const w = this.world[i];
-      if (!w.update(dt) || w.dead) { w.dispose?.(); this.world.splice(i, 1); }
+      if (!ghostMute(w, () => w.update(dt)) || w.dead) { w.dispose?.(); this.world.splice(i, 1); }
     }
   }
 
@@ -726,7 +807,9 @@ class Missile {
     this.ring.material.opacity = 0.35 + 0.35 * Math.abs(Math.sin(this.t * 9));
     this.ring.rotation.y += dt * 2;
     if (k >= 1) {
-      this.sys.world.push(new Tornado(this.sys, this.owner, this.team, this.to));
+      const tn = new Tornado(this.sys, this.owner, this.team, this.to);
+      tn.ghost = !!this.ghost;
+      this.sys.world.push(tn);
       play('strike_impact', { pos: this.to, volume: 1 });
       emit('shake', { pos: this.to.clone(), amount: 0.8 });
       return false;
@@ -993,9 +1076,12 @@ class Bubble {
     paint(this.owner, _v.copy(this.pos).setY(this.pos.y - this.r * 0.5), this.r * 0.6, this.team);
     if (near(this.pos)) { play('bubble_pop', { pos: this.pos, volume: 0.7 }); G.fx?.burst(this.pos, UP, this.owner.color, { count: 10, speed: 3, size: 0.08 }); }
   }
+  // online: the owner's copy says when it blows
+  netEvent(d) { if (d[2] === 'x') this.explode(null); }
   explode(by) {
     if (this.dead) return;
     this.dead = true;
+    if (!this.ghost && this.gid) rec(this.owner, [3, this.gid, 'x']);
     const d = SPECIALS.blower, R = this.r * d.blastMul;
     const c = this.pos.clone();
     const owner = by && by.team === this.team ? by : this.owner;
@@ -1209,7 +1295,7 @@ const IMPL = {
       s.aiming = false;
       const g = G.physics.raycast(_v.set(s.target.x, 40, s.target.z), DOWN, 80, _hit, true);
       const to = g.hit ? g.point.clone() : new THREE.Vector3(s.target.x, 0, s.target.z);
-      this.world.push(new Missile(this, a, to));
+      this._spawn(a, new Missile(this, a, to), 'mi', v3(to));
       emit('special:launch', { actor: a, to: to.clone() });
       this.end(a, 'launch');
     },
@@ -1249,7 +1335,7 @@ const IMPL = {
         s.cd = s.def.interval; s.firing = 0.45;
         const m = G.projectiles._muzzle(a, _v.set(0, 0, 0)).clone();
         const dir = G.projectiles._aimFrom(a, m, _v2).clone();
-        this.world.push(new Twister(this, a, m, dir));
+        this._spawn(a, new Twister(this, a, m, dir), 'tw', [...v3(m), ...v3(dir)]);
         a.character.trigger('shoot');
         if (hearable(a)) play('zooka_fire', { pos: a.isLocal ? undefined : m, volume: a.isLocal ? 0.9 : 0.6 });
         if (a.isLocal) emit('recoil', { amount: 0.02 });
@@ -1307,7 +1393,8 @@ const IMPL = {
       const g = G.physics.raycast(_v2.copy(at).setY(a.pos.y + 1.2), DOWN, 4, _hit, true);
       const pos = g.hit && g.normal.y > 0.6 ? g.point.clone() : a.pos.clone();
       a.character.trigger('throw');
-      this.world.push(new Speaker(this, a, pos, IMPL.wail.dirOf(a)));
+      const dir = IMPL.wail.dirOf(a);
+      this._spawn(a, new Speaker(this, a, pos, dir), 'sk', [...v3(pos), ...v3(dir)]);
       this.end(a, 'place');
     },
     end(a, s) {
@@ -1388,7 +1475,7 @@ const IMPL = {
       const d = s.def;
       if (!inp.fire) s.needRelease = false;
       if (inp.fire && !s.cur && s.count < d.max && !s.done && !s.needRelease) {
-        s.cur = new Bubble(this, a); s.curT = 0; this.world.push(s.cur);
+        s.cur = new Bubble(this, a); s.curT = 0; this.world.push(s.cur); s.cur.gid = netId(a);
         s.inflate = hearable(a) ? loop('blower_inflate', { pos: a.isLocal ? undefined : a.pos, volume: a.isLocal ? 0.6 : 0.4 }) : null;
       }
       if (s.cur) {
@@ -1402,15 +1489,20 @@ const IMPL = {
         s.inflate?.set?.({ pitch: 1 + k });
         if (!inp.fire || s.curT > d.inflate + 0.6) {
           if (inp.fire) s.needRelease = true;
-          s.cur.release(f); s.cur = null; s.count++;
+          IMPL.blower.let(a, s.cur, f); s.cur = null; s.count++;
           s.inflate?.stop?.(0.05); s.inflate = null;
           if (s.count >= d.max) { s.done = true; s.dur = s.t + 0.6; }
         }
       }
       return true;
     },
+    // let go of the bubble (online: it appears on everyone else's screen now, already blown)
+    let(a, b, f) {
+      b.release(f);
+      if (b.gid) rec(a, [2, 'bu', b.gid, ...v3(b.pos), r2(b.r), r2(f.x), r2(f.y), r2(f.z)]);
+    },
     end(a, s) {
-      if (s.cur) { s.cur.release(this._fwd(a, _v2)); s.cur = null; }
+      if (s.cur) { IMPL.blower.let(a, s.cur, this._fwd(a, _v2)); s.cur = null; }
       s.inflate?.stop?.(0.05);
       this._restoreWeapon(a);
     },
@@ -1533,7 +1625,8 @@ const IMPL = {
         const m = G.projectiles._muzzle(a, _v.set(0, 0, 0)).clone();
         const dir = G.projectiles._aimFrom(a, m, _v2).clone();
         a.character.trigger('throw');
-        this.world.push(new ThrownStamp(this, a, _v3.copy(a.pos).setY(a.pos.y + 1.5).clone(), dir));
+        const from = _v3.copy(a.pos).setY(a.pos.y + 1.5).clone();
+        this._spawn(a, new ThrownStamp(this, a, from, dir), 'ts', [...v3(from), ...v3(dir)]);
         this.end(a, 'throw');
         return true;
       }
@@ -1605,6 +1698,7 @@ const IMPL = {
       const at = g.hit ? g.point.clone() : c.clone().setY(a.pos.y);
       paint(a, _v2.copy(at).setY(at.y + 0.2), radius * 0.95, a.team);
       paint(a, _v2.copy(at).addScaledVector(f, radius * 0.7).setY(at.y + 0.2), radius * 0.6, a.team);
+      rec(a, [4, 'sl', ...v3(at), r2(radius)]);
       if (near(at, 40)) { G.fx?.explosion(_v2.copy(at).setY(at.y + 0.3), a.color, radius); play('stamp_slam', { pos: at, volume: 0.85 }); }
       rumble(a, 0.5, 0.4, 120);
       for (const e of G.actors) {
@@ -1660,7 +1754,7 @@ const IMPL = {
       s.thrown = true;
       const from = a.pos.clone().setY(a.pos.y + 1.35);
       const vel = G.projectiles.throwVelocity(a, s.def.throwSpeed, new THREE.Vector3());
-      this.world.push(new Orb(this, a, from, vel));
+      this._spawn(a, new Orb(this, a, from, vel), 'or', [...v3(from), ...v3(vel)]);
       s.raise = false;
       a.character.trigger('throw');
       if (hearable(a)) play('booyah_throw', { pos: a.isLocal ? undefined : a.pos, volume: 0.9 });
@@ -1702,12 +1796,13 @@ const IMPL = {
       s.cd = s.def.cooldown;
       if (hearable(a)) play('zip_fire', { pos: a.isLocal ? undefined : a.pos, volume: 0.7 });
       const g = G.physics.raycast(from, dir, s.def.range, _hit, true);
-      if (!g.hit) { s.miss = { to: from.clone().addScaledVector(dir, s.def.range), t: 0.2 }; return; }
+      if (!g.hit) { s.miss = { to: from.clone().addScaledVector(dir, s.def.range), t: 0.2 }; rec(a, [4, 'zm', ...v3(s.miss.to)]); return; }
       const n = g.normal.clone(), wall = Math.abs(n.y) < 0.55;
       const to = g.point.clone().addScaledVector(n, PLAYER.radius + 0.08);
       if (wall) to.y -= 1.0; else to.y = g.point.y;
       s.zip = { to, n, wall, anchor: g.point.clone(), t: 0, stuck: 0 };
       s.anchor = s.zip.anchor;
+      rec(a, [4, 'zf', ...v3(s.anchor), r2(n.x), r2(n.y), r2(n.z)]);
       s.body = true; s.hang = 0;
       paint(a, g.point.clone().addScaledVector(n, 0.1), 1.0, a.team);
       if (near(g.point, 40)) play('zip_latch', { pos: g.point, volume: 0.8 });
@@ -1750,6 +1845,7 @@ const IMPL = {
     // body) takes impactDirect, the rest of the blast impactSplash
     impact(a, s, direct) {
       const d = s.def, c = _v3.copy(a.pos).setY(a.pos.y + 0.7).clone();
+      rec(a, [4, 'zi', ...v3(c), s.hang > 0 ? 1 : 0]);
       for (const e of G.actors) {
         if (e.team === a.team || !e.alive) continue;
         _v.copy(e.pos); _v.y += 0.8;
@@ -1883,7 +1979,7 @@ const IMPL = {
         const m = IMPL.crab.local(a, s, s.cannonMuzzle, _v).clone();
         const lp = clamp(a.aimPitch + 0.45, 0.1, 1.0);
         const vel = new THREE.Vector3(Math.sin(s.hull) * Math.cos(lp), Math.sin(lp), Math.cos(s.hull) * Math.cos(lp)).multiplyScalar(d.cannonSpeed);
-        this.world.push(new Shell(this, a, m, vel));
+        this._spawn(a, new Shell(this, a, m, vel), 'sh', [...v3(m), ...v3(vel)]);
         if (hearable(a)) play('crab_cannon', { pos: a.isLocal ? undefined : m, volume: 0.9 });
         emit('shake', { pos: a.pos.clone(), amount: 0.25 });
         rumble(a, 0.5, 0.4, 140);
@@ -1945,3 +2041,98 @@ const IMPL = {
     },
   },
 };
+
+// ================================================================================================ online ghosts
+// A remote player's special on this screen (see the note at the top): what differs from IMPL. start (default: IMPL's
+// start — kept only where it's visual, or harmless on a squidkid the network moves), tick (visuals per frame; runs
+// muted), event (the owner's moments, [4, what, …]). Nothing here decides a hit.
+const GHOST = {
+  strike: { start(a) { a.character.trigger('throw'); } },                 // (aiming is the owner's; its missile arrives)
+  sonar: { start: IMPL.sonar.start },                                      // (the reveal is everyone's)
+  wail: {
+    start(a, s) { IMPL.wail.start.call(this, a, s); if (s.guide) s.guide.visible = false; },   // (the aim guide is the owner's)
+    tick(a, s, dt) { IMPL.wail.tick.call(this, a, s, dt); if (s.guide) s.guide.visible = false; },
+  },
+  kraken: {
+    tick(a, s) {
+      const b = s.body3;
+      if (!b) return;
+      b.position.set(a.pos.x, a.pos.y + (a.smoothY || 0), a.pos.z);
+      b.rotation.y = a.yaw;
+      const sq = a.grounded ? 1 + Math.sin(s.t * 14) * 0.04 * Math.min(1, Math.hypot(a.vel.x, a.vel.z) / 4) : clamp(1 + a.vel.y * 0.025, 0.8, 1.25);
+      b.scale.set(1 / Math.sqrt(sq), sq, 1 / Math.sqrt(sq));
+    },
+  },
+  jetpack: {
+    tick(a, s, dt) {
+      s.fx = (s.fx || 0) - dt;
+      const tg = a.character.tank?.group;
+      if (s.fx <= 0 && tg && near(a.pos, 30)) {
+        s.fx = 0.05;
+        for (const n of s.nozzles || []) G.fx?.burst(tg.localToWorld(_v.copy(n)), DOWN, a.color, { count: 2, speed: 4, size: 0.07, ring: false, mist: false });
+      }
+      s.loop?.set?.({ pos: a.pos });
+    },
+  },
+  stamp: {
+    event(a, s, d) {
+      if (d[1] !== 'sl') return;
+      const at = V(d, 2);
+      if (near(at, 40)) { G.fx?.explosion(_v2.copy(at).setY(at.y + 0.3), a.color, d[5]); play('stamp_slam', { pos: at, volume: 0.85 }); }
+    },
+  },
+  booyah: {
+    start(a, s) { IMPL.booyah.start.call(this, a, s); s.raise = true; },   // (arm up, the orb overhead)
+    tick(a, s, dt) { if (!s.netCharge) s.charge = Math.min(1, s.t / s.def.charge); IMPL.booyah.tick.call(this, a, s, dt); },
+  },
+  zipcaster: {
+    tick: IMPL.zipcaster.tick,   // aura + tether (the zip itself is the owner's movement)
+    event(a, s, d) {
+      if (d[1] === 'zf') {
+        s.zip = { anchor: V(d, 2) }; s.anchor = s.zip.anchor; s.hang = 0;
+        if (near(s.anchor, 40)) play('zip_latch', { pos: s.anchor, volume: 0.8 });
+        if (hearable(a)) play('zip_pull', { pos: a.pos, volume: 0.7 });
+      } else if (d[1] === 'zm') s.miss = { to: V(d, 2), t: 0.2 };
+      else if (d[1] === 'zi') {
+        const c = V(d, 2);
+        s.zip = null; s.hang = d[5] ? s.def.hang : 0;
+        G.fx?.explosion(c, a.color, s.def.impactRadius);
+        if (near(c, 40)) play('blaster_boom', { pos: c, volume: 0.6, pitch: 1.25 });
+        emit('shake', { pos: c.clone(), amount: 0.35 });
+      }
+    },
+  },
+  crab: {
+    tick(a, s, dt) {
+      const N = s.net;
+      if (N) {
+        s.hull += angleDiff(s.hull, N.hull) * Math.min(1, dt * 15);
+        if (N.roll !== s.roll) {
+          s.roll = N.roll;
+          s.loop?.stop?.(0.1);
+          s.loop = hearable(a) ? loop(s.roll ? 'crab_roll' : 'crab_move', { pos: a.pos, volume: 0 }) : null;
+        }
+        if (N.firing) s.firing = 0.3;
+      }
+      s.faceYaw = s.hull;
+      IMPL.crab.tick.call(this, a, s, dt);
+    },
+  },
+};
+
+// the owner's special pose state beyond the actor tick (packActor) → the ghost's (applyRemote)
+export function specialNetState(a) {
+  const s = a.specialActive;
+  if (!s || s.ghost || !s.def) return 0;
+  if (s.kind === 'crab') return (s.roll ? 1 : 0) | (s.firing > 0 ? 2 : 0) | ((Math.round((((s.hull % TAU) + TAU) % TAU) / TAU * 255) & 255) << 2);
+  if (s.kind === 'booyah') return Math.round(clamp(s.charge || 0, 0, 1) * 63);
+  return 0;
+}
+export function specialNetApply(a, v) {
+  const s = a.specialActive;
+  if (!s || !s.ghost) return;
+  if (s.kind === 'crab') s.net = { roll: !!(v & 1), firing: !!(v & 2), hull: ((v >> 2) & 255) / 255 * TAU };
+  else if (s.kind === 'booyah') { s.netCharge = true; s.charge = (v & 63) / 63; }
+}
+
+KIT_GHOSTS.sp = { ghost: (a, d) => G.specials?.netGhost(a, d), netHurt: (gid, dmg) => G.specials?.netHurtObj(gid, dmg) };
