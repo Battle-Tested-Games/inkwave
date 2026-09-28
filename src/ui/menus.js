@@ -2785,6 +2785,8 @@ export class Menus {
     const teamOf = (p) => (p && p.team === 1 ? 1 : 0);
     const colors = () => this._teamColors();
     const bossMode = () => lob.mode === 'boss';   // Boss Battle: one squad (team 0) vs HULLBREAKER (the session carries lobby.mode)
+    const lobMode = () => modeOf(lob.mode);       // turf | zones | boss
+    const LOB_MODES = ['turf', 'zones', 'boss'];
     const S = { launching: null, pendingTeam: null, teamPref: 'auto', emoteCd: 0, lastLobby: null, alive: true, copied: 0, subs: [], age: 0, joins: [], leaves: [], batchT: 0 };
 
     // ---- room code (top-left, big and proud)
@@ -2838,7 +2840,10 @@ export class Menus {
     const timeSeg = this._seg([['day', h('span', { class: 'iw-segico' }, h('i', { html: GLYPHS.sun }), 'DAY')], ['dusk', h('span', { class: 'iw-segico' }, h('i', { html: GLYPHS.moon }), 'DUSK')]], lob.time === 'dusk' ? 'dusk' : 'day', (v) => hostSet({ time: v }));
     const lenSegT = this._seg(durations.map((d) => [d, durLabel(d)]), lob.duration, (v) => hostSet({ duration: v }));
     const lenSegB = this._seg(BOSS_DURATIONS.map((d) => [d, durLabel(d)]), BOSS_DURATIONS.includes(lob.duration) ? lob.duration : 240, (v) => hostSet({ duration: v }));
-    const lenSeg = { el: h('span', { class: 'iw-lob__lensegs' }, lenSegT.el, lenSegB.el), adjust: (d) => (bossMode() ? lenSegB : lenSegT).adjust(d), cycle: () => (bossMode() ? lenSegB : lenSegT).cycle(),
+    // Zone Control: a fixed 5:00 + overtime (as offline)
+    const lenLockZ = h('div', { class: 'iw-lenlock' }, h('b', null, `${Math.round((ZONES.duration || 300) / 60)}:00`), h('span', null, '+ OVERTIME'));
+    const lenZ = () => { if (lobMode() === 'zones') { restartAnim(rLen, 'is-shake'); this._sfx('ui_error', 0.15); return true; } return false; };
+    const lenSeg = { el: h('span', { class: 'iw-lob__lensegs' }, lenSegT.el, lenSegB.el, lenLockZ), adjust: (d) => lenZ() || (bossMode() ? lenSegB : lenSegT).adjust(d), cycle: () => lenZ() || (bossMode() ? lenSegB : lenSegT).cycle(),
       refresh: (v) => (bossMode() ? lenSegB : lenSegT).refresh(v) };
     const botTgl = this._toggle({ key: '_bots', onChange: (v) => hostSet({ bots: v }) }, lob.bots !== false);
     const dOpts = Object.values(diffs).map((d) => [d.id, h('span', { class: 'iw-diffopt' }, h('span', { class: 'iw-pips' }, Array.from({ length: 3 }, (_, k) => h('i', { class: k < (DIFF_INFO[d.id]?.pips || 2) ? 'on' : '' }))), d.name)]);
@@ -2866,7 +2871,7 @@ export class Menus {
     const diffLbl = rDiff.querySelector('.iw-lset__label');
     diffLbl.lastChild.textContent = '';   // label text lives in its own span so boss mode can rename it
     diffLbl.appendChild(h('span', { class: 'iw-lset__lbltxt' }, 'BOT SKILL'));
-    // MODE (Turf War | Boss Battle): the panel's headline is the switch — ◀ ▶ for the host, read-only for guests
+    // MODE (Turf War | Zone Control | Boss Battle): the panel's headline is the switch — ◀ ▶ for the host, read-only for guests
     const modeName = h('span', { class: 'iw-display iw-lob__modename' }, 'TURF WAR');
     const modeIco = h('b', { html: GLYPHS.flag });
     const modeArrows = h('span', { class: 'iw-lob__modearrows' }, h('i', { class: 'is-l', html: GLYPHS.back }), h('i', { class: 'is-r', html: GLYPHS.next }));
@@ -2957,9 +2962,9 @@ export class Menus {
     };
     const setMode = (d) => {
       if (!isHost()) { this._bump(rMode, d < 0 ? 'left' : 'right'); this._sfx('ui_error', 0.15); return; }
-      const next = bossMode() ? 'turf' : 'boss';
-      // keep the length sensible for the mode (boss fights run 3–5 min, 4 by default)
-      const dur = next === 'boss' ? 240 : (durations.includes(lob.duration) ? lob.duration : (MATCH.defaultDuration || 180));
+      const next = LOB_MODES[(LOB_MODES.indexOf(lobMode()) + (d < 0 ? -1 : 1) + LOB_MODES.length) % LOB_MODES.length];
+      // keep the length sensible for the mode (boss fights run 3–5 min, 4 by default; Zone Control is 5:00 + overtime)
+      const dur = next === 'boss' ? 240 : next === 'zones' ? (ZONES.duration || 300) : (durations.includes(lob.duration) ? lob.duration : (MATCH.defaultDuration || 180));
       // a stage with no Boss Battle (Cargo Terminal) hands the room to a boss-eligible one (the session does the same)
       const was = maps.find((m) => m.id === lob.map);
       const map = next === 'boss' && !mapBossOk(lob.map) ? bossFallbackMap(lob.map) : lob.map;
@@ -3297,16 +3302,18 @@ export class Menus {
       { const P0 = TEAM_PALETTES[palIdx()]; palName.textContent = P0 ? P0.names.join(' vs ') : ''; }
       botTgl.refresh(lob.bots !== false);
       diffSeg.refresh(diffs[lob.difficulty] ? lob.difficulty : 'normal');
-      const bm = bossMode();
-      if (rMode._shown !== bm) {
+      const bm = bossMode(), md = lobMode(), zm = md === 'zones';
+      if (rMode._shown !== md) {
         const first = rMode._shown === undefined;
-        rMode._shown = bm;
-        modeName.textContent = bm ? 'BOSS BATTLE' : 'TURF WAR';
-        modeIco.innerHTML = bm ? BOSS_GLYPH : GLYPHS.flag;
+        rMode._shown = md;
+        modeName.textContent = MODE_INFO[md].label;
+        modeIco.innerHTML = bm ? BOSS_GLYPH : zm ? ZONE_GLYPH : GLYPHS.flag;
         el.classList.toggle('is-bossmode', bm);
+        el.classList.toggle('is-zonemode', zm);
         diffLbl.querySelector('.iw-lset__lbltxt').textContent = bm ? 'DIFFICULTY' : 'BOT SKILL';
-        hostChip.lastChild.textContent = bm ? 'HOST' : 'YOU’RE THE HOST';   // the longer BOSS BATTLE headline needs the room
-        lenSegT.el.style.display = bm ? 'none' : ''; lenSegB.el.style.display = bm ? '' : 'none';
+        hostChip.lastChild.textContent = bm || zm ? 'HOST' : 'YOU’RE THE HOST';   // the longer headlines need the room
+        lenSegT.el.style.display = bm || zm ? 'none' : ''; lenSegB.el.style.display = bm ? '' : 'none';
+        rLen.classList.toggle('is-locked', zm);
         if (!first) { restartAnim(rMode, 'is-swap'); restartAnim(status, 'is-swap'); }
       }
       lenSeg.refresh(lob.duration);
@@ -3326,7 +3333,7 @@ export class Menus {
         if (prev.difficulty !== lob.difficulty) flash(rDiff);
         if ((prev.mode || 'turf') !== (lob.mode || 'turf')) {
           flash(rMode);
-          if (!isHost()) this.toast(`${host ? host.name : 'The host'} picked ${bossMode() ? `BOSS BATTLE — everyone vs ${BOSS_NAME}!` : 'TURF WAR'}`, { icon: bossMode() ? BOSS_GLYPH : GLYPHS.flag });
+          if (!isHost()) this.toast(`${host ? host.name : 'The host'} picked ${bossMode() ? `BOSS BATTLE — everyone vs ${BOSS_NAME}!` : MODE_INFO[lobMode()].label}`, { icon: bossMode() ? BOSS_GLYPH : lobMode() === 'zones' ? ZONE_GLYPH : GLYPHS.flag });
         }
         if (!isHost() && (prev.map !== lob.map || prev.time !== lob.time)) {
           const m = maps.find((x) => x.id === lob.map);

@@ -2540,6 +2540,11 @@ circle.iw-ico-cut { fill: var(--cut, #fff); }
 .iw-lob__modearrows i svg { width: 64%; height: 64%; }
 .iw-lobby:not(.is-host) .iw-lob__modearrows { display: none; }
 .iw-lobby.is-bossmode .iw-lock { max-width: 42%; }
+/* Zone Control rooms: the longer headline, and the fixed 5:00 + overtime in place of the length picker */
+.iw-lobby.is-zonemode .iw-lob__mode { font-size: calc(var(--u) * 1.62); }
+.iw-lobby.is-zonemode .iw-lock { max-width: 42%; }
+.iw-lset--len.is-locked .iw-seg { display: none; }
+.iw-lset--len.is-locked .iw-lenlock { display: flex; }
 
 .iw-lob__squadlock { display: none; align-items: center; gap: .55em; width: calc(var(--u) * 22.5); height: calc(var(--u) * 2.75); padding: 0 calc(var(--u) * .9) 0 calc(var(--u) * .6); border-radius: 999px; background: var(--k);
   box-shadow: 0 0 0 calc(var(--u) * .14) rgba(255, 255, 255, .22), inset 0 calc(var(--u) * .3) 0 rgba(0, 0, 0, .5); }

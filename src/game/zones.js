@@ -1,5 +1,9 @@
 // Zone Control: the rules engine (no UI). A match with opts.mode === 'zones' owns one of these (match.zones).
 //
+// Online (see netEvent): the host runs the rules and records every decision — captures, control, penalties, rotations,
+// overtime, the end — plus a count snapshot twice a second, on its event timeline (in step with the paint it saw);
+// everyone else is a follower that replays them (and only predicts the count between snapshots).
+//
 // Zones come from the stage layout (layout.zones, see ZONE_FORMAT below). There is a central objective (one zone, or
 // two zones that must BOTH be held) and one side zone per team half (the one you give is Alpha's; Bravo's is its 180°
 // mirror). Only one objective is operational at a time: the centre to start with, then every 30–60 s the operational
@@ -43,6 +47,7 @@ const WARN = ZONES.warn ?? 0.3;          // the other team's share of a held zon
 const WARN_GAP = 4;                      // s between two warnings for one zone
 const MIN_STINT = 10;                    // a rotation never leaves an objective live for less than this before the lock
 const FILL_T = 0.6;                      // capture flood: the front's run time (s), eased out
+const r3 = (x) => Math.round(x * 1000) / 1000;
 const WIPE_T = 0.7;                      // new-objective wipe: in step with ZoneMarks' reveal sweep (SWEEP_T, linear)
 
 const partsOf = (z) => z.polys || [z.poly];
@@ -128,7 +133,12 @@ export class ZoneControl {
     this.overtime = false; this.overtimeT = 0;
     this.winner = null; this.reason = null;
     this.log = [];
+    this.snapT = 0;
   }
+
+  // online: a guest's copy follows the host's (match.follower; a host migration makes it the rules engine)
+  get follower() { return !!this.match.follower; }
+  _net(e) { if (!this.follower) G.netm?.recZone?.(e); }
 
   total(t) { return this.count[t] + this.penalty[t]; }
   // the team currently behind (higher total), or -1 when level
@@ -160,16 +170,25 @@ export class ZoneControl {
       for (let i = 0; i < c.length; i++) { const g = grid[c[i]]; if (g === 1) a++; else if (g === 2) b++; }
       const n = Math.max(1, c.length);
       z.share[0] = a / n; z.share[1] = b / n;
+      if (this.follower) { if (z.owner >= 0) this._contest(z); continue; }   // (control is the host's call)
       if (this.clock < z.hold) continue;                 // still being wiped for its turn as the objective
       if (z.owner === -1) {
         const t = z.share[0] >= ZONES.control ? 0 : z.share[1] >= ZONES.control ? 1 : -1;
-        if (t >= 0) { z.owner = t; z.warnArmed = true; z.warnT = -99; this._flood(z, t); emit('zones:zone', { zone: z, owner: t }); }
+        if (t >= 0) this._zoneOwner(z, t);
       } else if (z.share[1 - z.owner] >= ZONES.contest) {
-        z.owner = -1; emit('zones:zone', { zone: z, owner: -1 });
+        this._zoneOwner(z, -1);
       } else this._contest(z);
     }
+    if (this.follower) return;
     const o = this.active.zones.every((z) => z.owner === 0) ? 0 : this.active.zones.every((z) => z.owner === 1) ? 1 : -1;
     if (o !== this.owner) this._setOwner(o);
+  }
+  // a zone taken (flooded with the taker's ink) or neutralised
+  _zoneOwner(z, t) {
+    this._net(['zz', z.id, t]);
+    z.owner = t;
+    if (t >= 0) { z.warnArmed = true; z.warnT = -99; this._flood(z, t); }
+    emit('zones:zone', { zone: z, owner: t });
   }
 
   // the other team is inking a held zone close to the neutralise line: warn once (re-armed when it's pushed back)
@@ -194,6 +213,7 @@ export class ZoneControl {
       this.lastOwner = o;
     }
     this.holdT[0] = this.holdT[1] = 0;
+    this._net(['zo', o]);   // (after its penalty record: a follower plays them in the same order)
     emit('zones:control', { owner: o, prev, objective: this.active.id });
   }
 
@@ -203,6 +223,7 @@ export class ZoneControl {
     const start = this.start[t];
     const end = this.tieEnd[t] != null ? Math.max(this.tieEnd[t], this.total(t)) : this.total(t);
     const p = Math.max(0, Math.round(ZONES.penaltyK * (start - end))) + (start === ZONES.count ? 1 : 0);
+    this._net(['zp', t, p, r3(start), r3(end)]);
     this.penalty[t] += p;
     this.log.push({ t: this.match.duration - this.match.time, team: t, start, end, penalty: p, next: this.total(t) });
     emit('zones:penalty', { team: t, penalty: p, total: this.total(t), start, end });
@@ -220,13 +241,14 @@ export class ZoneControl {
     if (this.tieEnd[t] == null && this.start[t] > opp && before > opp && this.total(t) <= opp) this.tieEnd[t] = opp;
   }
 
+  // (each client fills its own players' gauges: a remote player's special meter is its owner's)
   _fillSpecials(dt) {
     let team = -1, rate = 0;
     if (this.owner >= 0) { team = 1 - this.owner; rate = ZONES.gaugeHeld; }
     else { team = this.losing(); rate = ZONES.gaugeNeutral; }
     if (team < 0) return;
     for (const a of this.match.actors) {
-      if (a.team !== team || !a.alive || a.specialActive) continue;
+      if (a.team !== team || !a.alive || a.specialActive || a.remote) continue;
       const was = a.specialReady();
       a.special = Math.min(a.specialCost(), a.special + rate * dt);
       if (!was && a.specialReady()) emit('special:ready', { actor: a });
@@ -240,11 +262,17 @@ export class ZoneControl {
     this.sampleT -= dt;
     if (this.sampleT <= 0) { this.sampleT = 1 / ZONES.sampleHz; this._sample(); }
     if (this.owner >= 0) {
-      this._tick(this.owner, dt);
+      this._tick(this.owner, dt);   // (a follower predicts it; the host's snapshots correct it)
       this.holdT[this.owner] += dt;
-      if (this.count[this.owner] <= 0 && this.penalty[this.owner] <= 0) return this._end(this.owner, 'knockout');
+      if (!this.follower && this.count[this.owner] <= 0 && this.penalty[this.owner] <= 0) return this._end(this.owner, 'knockout');
     } else this.neutralT += dt;
     this._fillSpecials(dt);
+    if (this.follower) { if (this.overtime) this.overtimeT += dt; else if (!this.final) this.nextSwap -= dt; return; }
+    if ((this.snapT -= dt) <= 0) {
+      this.snapT = 0.5;
+      this._net(['zs', r3(this.count[0]), r3(this.count[1]), r3(this.penalty[0]), r3(this.penalty[1]), Number.isFinite(this.nextSwap) ? r3(this.nextSwap) : -1,
+        r3(this.overtimeT), r3(this.neutralT), r3(this.holdT[0]), r3(this.holdT[1])]);
+    }
     // rotation: none in overtime, none once the last 30 s have started (this frame's clock tick reaches them → lock)
     if (this.overtime) this._overtime(dt);
     else if (!this.final) {
@@ -256,6 +284,7 @@ export class ZoneControl {
   _swap(to = null, final = false) {
     const o = this.objectives;
     const next = to || (this.active === o[0] ? (Math.random() < 0.5 ? o[1] : o[2]) : o[0]);
+    this._net(['za', o.indexOf(next), final ? 1 : 0]);
     for (const z of this.active.zones) z.owner = -1;
     this.active = next;
     // a new objective starts neutral on bare floor (wiped as it's revealed); control is re-read from the ink after
@@ -272,7 +301,7 @@ export class ZoneControl {
     this.nextSwap = 0;
     const C = this.objectives[0];
     if (this.active !== C) this._swap(C, true);
-    else emit('zones:active', { objective: C.id, zones: C.zones.map((z) => z.id), final: true, moved: false });
+    else { this._net(['zf']); emit('zones:active', { objective: C.id, zones: C.zones.map((z) => z.id), final: true, moved: false }); }
   }
 
   // ---- time's up. Returns true when the match should end now; false = overtime has begun.
@@ -281,12 +310,14 @@ export class ZoneControl {
     const grace = this.owner === -1 && this.lastOwner === L && this.neutralT < ZONES.overtimeGrace;
     if (L >= 0 && (this.owner === L || grace)) {
       this.overtime = true; this.overtimeT = 0;
+      this._net(['zt', L]);
       emit('zones:overtime', { losing: L });
       return false;
     }
     if (L < 0) {
       // level at the horn: sudden death — play on until someone gets ahead (or the overtime cap)
       this.overtime = true; this.overtimeT = 0;
+      this._net(['zt', -1]);
       emit('zones:overtime', { losing: -1 });
       return false;
     }
@@ -319,9 +350,54 @@ export class ZoneControl {
 
   _end(winner, reason) {
     if (this.winner != null) return;
+    this._net(['ze', winner, reason, r3(this.count[0]), r3(this.count[1]), r3(this.penalty[0]), r3(this.penalty[1])]);   // (the final numbers, exact)
     this.winner = winner; this.reason = reason;
     emit('zones:end', { winner, reason, counts: [this.total(0), this.total(1)] });
     this.match.endZones?.(winner, reason);
+  }
+
+  // ---- online: a follower replays the host's records (netmatch 'z', on the host's event timeline)
+  netEvent(e) {
+    if (!Array.isArray(e) || !this.follower || this.winner != null) return;
+    switch (e[0]) {
+      case 'zz': { const z = this.zones[e[1]]; if (z) this._zoneOwner(z, e[2]); break; }
+      case 'zo': {
+        const o = e[1], prev = this.owner;
+        if (o === prev) break;
+        this.owner = o;
+        if (o === -1) this.neutralT = 0;
+        else { if (this.lastOwner !== o) { this.start[o] = this.total(o); this.tieEnd[o] = null; } this.lastOwner = o; }   // (kept for a host migration)
+        this.holdT[0] = this.holdT[1] = 0;
+        emit('zones:control', { owner: o, prev, objective: this.active.id });
+        break;
+      }
+      case 'zp': {
+        const [, t, p, start, end] = e;
+        this.penalty[t] += p;
+        this.log.push({ t: this.match.duration - this.match.time, team: t, start, end, penalty: p, next: this.total(t) });
+        emit('zones:penalty', { team: t, penalty: p, total: this.total(t), start, end });
+        break;
+      }
+      case 'za': { const next = this.objectives[e[1]]; if (!next) break; if (e[2]) { this.final = true; } this._swap(next, !!e[2]); break; }
+      case 'zf': {
+        this.final = true; this.nextSwap = 0;
+        const C = this.objectives[0];
+        emit('zones:active', { objective: C.id, zones: C.zones.map((z) => z.id), final: true, moved: false });
+        break;
+      }
+      case 'zt': this.overtime = true; this.overtimeT = 0; this.otLosing = e[1]; emit('zones:overtime', { losing: e[1] }); break;
+      case 'zs': {
+        const [, c0, c1, p0, p1, ns, ot, nt, h0, h1] = e;
+        this.count[0] = c0; this.count[1] = c1; this.penalty[0] = p0; this.penalty[1] = p1;
+        this.nextSwap = ns < 0 ? Infinity : ns;
+        this.overtimeT = ot; this.neutralT = nt; this.holdT[0] = h0; this.holdT[1] = h1;
+        break;
+      }
+      case 'ze':
+        if (e.length > 3) { this.count[0] = e[3]; this.count[1] = e[4]; this.penalty[0] = e[5]; this.penalty[1] = e[6]; }
+        this._end(e[1], e[2]);
+        break;
+    }
   }
 
   // snapshot for the HUD / results / tests

@@ -18,7 +18,7 @@ G.net.hostId
 G.net.isHost     // boolean
 G.net.error      // last error message (string) or null
 G.net.lobby = {
-  map: 'tidewater', time: 'day' | 'dusk', duration: 180, bots: true, difficulty: 'normal',
+  map: 'tidewater', time: 'day' | 'dusk', duration: 180, bots: true, difficulty: 'normal', mode: 'turf' | 'zones' | 'boss',
   players: [{ id, name, team: 0 | 1, weapon, sub, special, style, ready, host, you, ping }],   // stable order: join order
   maxPlayers: 8,
 }
@@ -28,7 +28,7 @@ await G.net.create(name)          // → code; state goes connecting → lobby (
 await G.net.join(code, name)      // rejects with Error('Room not found' | 'Room is full' | 'Match in progress' | 'Could not connect')
 G.net.leave()                     // back to 'offline'
 G.net.setMe({ name, weapon, sub, special, style, ready, team })   // any subset; team: 0 | 1 | 'auto'
-G.net.setSettings({ map, time, duration, bots, difficulty })   // host only
+G.net.setSettings({ map, time, duration, bots, difficulty, mode })   // host only (Zone Control always runs 5:00 + overtime)
 G.net.canStart()                  // host: true when everyone present is ready (host counts as ready)
 G.net.start()                     // host only → state 'starting' for everyone, then 'match'
 G.net.emote(name)                 // 'booyah' | 'wave' | 'dance' | 'flex' — shown on your lobby character for everyone
@@ -83,6 +83,17 @@ events (`['tr' …]`, `['ev' …]`) played on the same timeline, so a remote rol
 the same turf; other players' shots are visual-only ghosts. Hits are decided by the shooter's screen and applied by
 the victim's owner (`{k:'hit'}`); splats, specials and respawns are forwarded as events. The host's final count is the
 result on every screen.
+
+**Kit weapons and subs (src/game/kits/*, subs.js).** A world object of its own (a fist, an arrow, a canopy, a thrown
+sub, a Waddle …) is recorded by its owner as `['k', nid, kind, data]` and replayed by the kit's `ghost(actor, data)`:
+visual-only (paint muted, hits dropped) and never deciding for itself — its owner's end / lock / path records drive it.
+A hit on a ghost device (curtain, beacon, Waddle, Torpedo …) goes to its owner (`{k:'dh'}` → the kit's `netHurt`).
+A kit's pose state (a Mitts leap, a held Brolly canopy) rides the actor tick (`netState` / `netApply`).
+
+**Zone Control.** The host runs the rules; every decision (capture, control, penalty, rotation, overtime, the end
+with its exact counts) and a count snapshot twice a second go on its event timeline as `['z', …]`, so they land in
+step with the paint that caused them. Guests follow (zones.js `netEvent`): they only predict the count between
+snapshots, and each client fills its own players' special gauges.
 
 **Relay (server/).** One Durable Object per room code: membership, host election, join refusal (unknown / full /
 match running) and blind fan-out of `b|` / `s|to|` payloads. Clients send `"ping"` every 2 s, answered by the runtime

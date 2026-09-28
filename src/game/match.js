@@ -125,6 +125,10 @@ export class Match {
       if (a.bot) { a.bot.aimYaw = a.yaw; a.bot.aimPitch = 0; }
     }
     this.unsubs = [on('splatted', (e) => this._onSplatted(e))];
+    if (this.mode === 'zones') {   // Zone Control online: the host runs the rules, guests follow (zones.js netEvent)
+      this.zones = new ZoneControl(this);
+      this.unsubs.push(on('turf', (e) => this._zoneTurf(e)));
+    }
     if (this.mode === 'boss') { this.bossMode = new BossMode(this); this.boss = this.bossMode.boss; }
   }
 
@@ -251,6 +255,7 @@ export class Match {
       const Z = this.zones;
       this.result = { mode: 'zones', coverage: G.paint.coverage(), winner: Z.winner ?? (Math.random() < 0.5 ? 0 : 1), reason: Z.reason,
         counts: [Math.ceil(Z.total(0)), Math.ceil(Z.total(1))], penalty: [...Z.penalty], overtime: Z.overtime, log: Z.log };
+      G.netm?.sendResult(this.result);        // online: every client shows the host's result
       this.setState('judge');
       return;
     }
