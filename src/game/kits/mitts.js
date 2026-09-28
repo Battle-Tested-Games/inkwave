@@ -710,8 +710,45 @@ function botFindWall(a, target) {
   }
   return best;
 }
+// own ink along (nx, nz) from the kid, as far as d m ahead: a lane to swim in on
+const _rs = { own: 0, enemy: 0, empty: 0, n: 0 };
+function ownLane(a, nx, nz, d) {
+  for (const k of [1.2, 2.6, 4.2]) {
+    if (k > 1.2 && k > d - 0.6) break;
+    const st = G.paint.regionStats(a.pos.x + nx * k, a.pos.y, a.pos.z + nz * k, 0.8, a.team, _rs);
+    if (!st.n || st.own < 0.5) return false;
+  }
+  return true;
+}
+// The approach is the Mitts' whole fight: most of their splats happen before they reach anyone. bot.tactics runs every
+// fight frame after the core's defaults (which walk a melee bot straight at the target) and takes over from 5–14 m:
+//   · own ink running toward the target → swim it in (fast, low, hard to hit)
+//   · no lane → punch while closing: the fists paint the way (a lane for the next few metres) and the sponge guard is up
+//   · both weave across the line to them instead of walking a straight, easy-to-track line
+// Leaps / wall clings / out of sight / in reach: the kit's fight() and the core keep the frame.
+function botTactics(brain, ctx) {
+  const { a, w, dist, dt, it, move, target: t } = ctx;
+  if (!w.botApproach || ctx.retreat || !t || !t.pos || !ctx.visible) return;
+  const k = K(a.weaponRunner);
+  if (k.charging || k.leaping || k.cling || dist <= w.range * 1.05 || dist > 14) return;
+  const B = botState(brain);
+  B.weaveT = (B.weaveT || 0) + dt;
+  if (B.weaveP === undefined) B.weaveP = Math.random() * 6.28;
+  const nx = (t.pos.x - a.pos.x) / dist, nz = (t.pos.z - a.pos.z) / dist;
+  // heading: straight at them when the way is open (the core's melee walk), else the nav path's; plus the weave
+  let ux = nx, uz = nz;
+  const ml = Math.hypot(move.x, move.z);
+  if (dist > 7 && ml > 0.1) { ux = move.x / ml; uz = move.z / ml; }
+  const sway = Math.sin(B.weaveT * 4.2 + B.weaveP) * 0.6;
+  const mx = ux - uz * sway, mz = uz + ux * sway, l = Math.hypot(mx, mz) || 1;
+  move.set(mx / l, 0, mz / l);
+  if (a.groundTeam === 1 && ownLane(a, nx, nz, Math.min(dist - w.range, 5))) { it.squid = true; it.fire = false; return; }
+  if (a.ink > w.inkPerPunch * 6) { it.squid = false; it.fire = true; }
+}
+
 const bot = {
   paintPitch: -0.32,
+  tactics: botTactics,
   fight(brain, ctx) {
     const { a, w, dist, dt, move, target: t } = ctx;
     const r = a.weaponRunner, k = K(r), B = botState(brain);
@@ -740,8 +777,8 @@ const bot = {
       if (landingOk(a, _bp) && botLeap(r, k, c, away, 0.05)) { B.leapCd = 4; return false; }
     }
     // pounce from mid range
-    if (a.grounded && B.leapCd <= 0 && dist > 5.5 && dist < 12.5 && a.ink >= w.leapInkMax + 15 && clear && Math.abs(t.pos.y - a.pos.y) < 2.5 && Math.random() < dt * 1.6) {
-      B.leapCd = 2.5 + Math.random() * 3;
+    if (a.grounded && B.leapCd <= 0 && dist > 5.5 && dist < 12.5 && a.ink >= w.leapInkMax + 8 && clear && Math.abs(t.pos.y - a.pos.y) < 2.5 && Math.random() < dt * 3) {
+      B.leapCd = 2 + Math.random() * 2;
       const lead = 0.8;
       const tx = t.pos.x + t.vel.x * lead, tz = t.pos.z + t.vel.z * lead;
       const yaw = Math.atan2(tx - a.pos.x, tz - a.pos.z), d = Math.hypot(tx - a.pos.x, tz - a.pos.z);
@@ -831,10 +868,28 @@ MAIN_KITS.mitts = {
   jump,
   busy: (r) => !!(r.kit && r.kit.mitts && r.kit.leaping),
   // leap armour: an incoming leap is otherwise picked off before it lands — mid-air (and on the landing beat) the kid
-  // takes W().leapArmor of any damage
-  damageTaken: (r, amount) => {
+  // takes W().leapArmor of any damage. Sponge guard: punching with the gloves up (and a beat after), a hit from the
+  // front (within guardArc° of the facing) takes W().guardArmor — the sponge soaks part of it (a squish off the gloves).
+  damageTaken: (r, amount, attacker) => {
     const k = r.kit && r.kit.mitts ? r.kit : null, w = W();
-    return k && (k.leaping || k.landT < (w.leapArmorGrace ?? 0.15)) ? amount * (w.leapArmor ?? 0.5) : amount;
+    if (k && (k.leaping || k.landT < (w.leapArmorGrace ?? 0.15))) return amount * (w.leapArmor ?? 0.35);
+    const a = r.a;
+    if (k && !k.cling && a.form === 'kid' && attacker && attacker !== a && attacker.pos && r.firingT > 0.35 - (w.guardAfter ?? 0.25)) {
+      const dx = attacker.pos.x - a.pos.x, dz = attacker.pos.z - a.pos.z, l = Math.hypot(dx, dz);
+      if (l > 0.01 && (Math.sin(a.aimYaw) * dx + Math.cos(a.aimYaw) * dz) / l > Math.cos((w.guardArc ?? 70) * DEG)) {
+        if (a.isLocal || near(a.pos, 22)) {
+          const t = G.time;
+          if (!(k.squishT > t - 0.12)) {   // (a spray of hits squishes once)
+            k.squishT = t;
+            gloveMuzzle(a, k.side, _v2);
+            G.fx?.burst(_v2, _v3.set(dx / l, 0.35, dz / l), a.color, { count: 6, speed: 2.4, size: 0.07 });
+            G.audio?.play('mitts_pop', { pos: a.isLocal ? undefined : _v2, volume: a.isLocal ? 0.35 : 0.25, pitch: 0.7 });
+          }
+        }
+        return amount * (w.guardArmor ?? 0.65);
+      }
+    }
+    return amount;
   },
   firingPose: (r) => { const k = r.kit && r.kit.mitts ? r.kit : null; return !!k && (k.charging || k.leaping || k.cling || k.landT < 0.35); },
   moveSpeed: (r, w) => {
