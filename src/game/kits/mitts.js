@@ -5,8 +5,9 @@
 //    anyone else near it for less and paints a splat. Near full run speed while punching.
 //  · Charged leap (hold fire, press jump — the press never becomes a jump): a coiled crouch while jump stays held, the
 //    gloves swelling with ink; let go to leap along the aim (aim higher for a higher arc, ≈ 4.5–13 m on flat ground).
-//    Costs leapInkMin … leapInkMax ink with the charge. Where it comes down: a splash ring (landDamageMax at the centre,
-//    falling off to landDamageMin) and a big paint splat. The local player sees the arc + landing ring while charging;
+//    Costs leapInkMin … leapInkMax ink with the charge. Where it comes down: a glove smash on anyone right there
+//    (gloveDamage within gloveRadius), a splash ring (landDamageMax at the centre, falling off to landDamageMin), a big
+//    paint splat, and landInvuln s untouchable (the spawn-protection flicker). The local player sees the arc + landing ring while charging;
 //    in flight everyone sees the landing zone marked on the ground in the leaper's ink (the telegraph).
 //  · Wall cling: a leap that meets a wall (one that rises past the head) sticks there — the kid hangs off it by the left
 //    glove, still punching with the right. Holding on drains clingDrain ink / s; jump lets go (fire + jump leaps off the
@@ -423,7 +424,16 @@ function telegraph(a, k, w, dt) {
 }
 // the leap's splash where it comes down (ground or wall): damage ring + big splat + FX
 function landSplash(a, at, n) {
-  const w = W();
+  const w = W(), col = a.color;
+  if (w.landInvuln) a.invuln = Math.max(a.invuln, w.landInvuln);   // a moment untouchable on landing (it flickers)
+  // the gloves themselves: whoever it comes down on takes a glove smash on top of the splash
+  if (w.gloveDamage) for (const e of G.actors) {
+    if (e.team === a.team || !e.alive) continue;
+    const reach = w.gloveRadius + (e.hitR || PLAYER.radius);
+    if (Math.hypot(e.pos.x - at.x, e.pos.z - at.z) > reach || Math.abs(e.pos.y + (e.smoothY || 0) + 0.7 - at.y) > 1.6) continue;
+    G.projectiles.applyHit(a, e, w.gloveDamage, 'mitts');
+    if (a.isLocal || e.isLocal || near(e.pos, 30)) G.fx?.burst(_b.copy(e.pos).setY(e.pos.y + 0.8), UP, col, { count: 10, speed: 3.6, size: 0.09 });
+  }
   const c = _a.copy(at).addScaledVector(n, 0.35);
   let area = G.paint.splat(c, w.landPaint, a.team, { seed: Math.random() });
   for (let i = 0; i < 6; i++) {

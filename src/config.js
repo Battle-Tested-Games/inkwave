@@ -245,17 +245,19 @@ export const WEAPONS = {
     punchInterval: 0.12, inkPerPunch: 1.6, punchSpread: 2.5,   // three fists splat: ≈ 0.24 s + the flight
     fistSpeed: 28, fistRange: 4.6, fistSize: 0.2,
     // sponge guard: while punching (and a beat after), a hit from within guardArc° of where you face takes × guardArmor
-    guardArmor: 0.65, guardArc: 70, guardAfter: 0.25,
+    guardArmor: 0.5, guardArc: 70, guardAfter: 0.25,
     botApproach: 1,          // bots: swim / weave / punch their way in (kits/mitts.js botTactics); 0 = the plain melee walk (A/B tests)
     punchDamage: 38,         // direct: three fists splat
     splashRadius: 1.4, splashMax: 22, splashMin: 10, fistPaint: 0.95,
     moveSpeedFiring: 5.4,
     // charged leap: hold fire, press jump (hold to charge, release to leap along the aim; aim higher = higher arc)
-    leapChargeTime: 0.45, leapInkMin: 15, leapInkMax: 25, moveSpeedCharging: 1.1,
+    leapChargeTime: 0.45, leapInkMin: 9, leapInkMax: 15, moveSpeedCharging: 1.1,
     leapArmor: 0.35, leapArmorGrace: 0.15,  // damage taken × leapArmor while in the air on a leap (and for leapArmorGrace s after landing)
     leapSpeedMin: 10.9, leapSpeedMax: 18.6,   // launch speed at 0 / full charge (≈ 4.5 m / 13 m on flat ground)
     leapAngle: 40, leapAngleMin: 18, leapAngleMax: 60, leapPitchK: 0.55, leapVyMax: 13,
     landRadius: 2.8, landDamageMax: 100, landDamageMin: 35, landPaint: 2.5,   // a dead-centre landing splats
+    landInvuln: 0.5,         // s untouchable after a leap lands (ground or wall): the spawn-protection flicker shows it
+    gloveRadius: 1.1, gloveDamage: 40,   // the gloves themselves: anyone the kid lands on (within gloveRadius + their body) takes this on top of the splash
     // wall cling (a leap into a wall sticks there): drains ink; jump or an empty tank lets go
     clingDrain: 8,
     special: 'slam', specialCost: 180, sub: 'boomerang',
